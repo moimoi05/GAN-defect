@@ -51,9 +51,12 @@ def run_stage_1_dataset() -> bool:
 def run_stage_2_components() -> bool:
     # The actual full-loss backward/update path is checked in stage 3. These
     # regressions independently exercise architecture, composition and gradients.
-    return run_command([sys.executable, '-m', 'pytest', 'tests/test_generator.py',
-                        'tests/test_discriminator.py', 'tests/test_losses.py',
-                        'tests/test_paper_baseline.py', '-q'])
+    test_args = ['tests/test_generator.py', 'tests/test_discriminator.py',
+                 'tests/test_losses.py', 'tests/test_paper_baseline.py']
+    if _CONTEXT.get('device') == 'cuda':
+        # GPU acceptance procedure gate: verify native CUDA AMP GradScaler hardware execution
+        test_args.extend(['tests/test_trainer_regression.py', '-k', 'test_real_cuda_amp_gradscaler_overflow'])
+    return run_command([sys.executable, '-m', 'pytest', *test_args, '-q'])
 
 
 def load_update_evidence(output_dir: Path) -> dict:

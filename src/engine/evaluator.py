@@ -79,6 +79,8 @@ class DefectGANEvaluator:
             result={k:v/count for k,v in totals.items()}
             peak_alloc = torch.cuda.max_memory_allocated(self.device) if self.device.type == 'cuda' else None
             peak_res = torch.cuda.max_memory_reserved(self.device) if self.device.type == 'cuda' else None
+            result['val_peak_cuda_allocated_bytes'] = peak_alloc
+            result['val_peak_cuda_reserved_bytes'] = peak_res
             directory=self.output_dir/'validation'
             directory.mkdir(parents=True,exist_ok=True)
             meta = {
@@ -90,6 +92,8 @@ class DefectGANEvaluator:
                 'amp_dtype':str(self.amp_dtype) if self.use_amp else 'none',
                 'peak_cuda_allocated_bytes':peak_alloc,
                 'peak_cuda_reserved_bytes':peak_res,
+                'val_peak_cuda_allocated_bytes':peak_alloc,
+                'val_peak_cuda_reserved_bytes':peak_res,
             }
             (directory/f'epoch_{epoch:04d}.json').write_text(json.dumps(meta,indent=2),encoding='utf-8')
             return result

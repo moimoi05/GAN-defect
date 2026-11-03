@@ -175,3 +175,33 @@ def test_manifest_consistency_matching_passes(tmp_path):
     resolved2 = verify_manifest_consistency(sub1 / "test_val.csv", data_root=sub2)
     assert resolved2.exists()
     assert resolved2.read_text() == content
+
+
+def test_manifest_consistency_absolute_path_mismatch_fails_closed(tmp_path):
+    """Manifest consistency check: absolute path cannot bypass consistency check; differing copies fail-closed."""
+    from src.datasets.f971_dataset import verify_manifest_consistency
+    image_ws = tmp_path / "image_ws"
+    data_mount = tmp_path / "data_mount"
+    (image_ws / "training/manifests").mkdir(parents=True)
+    (data_mount / "training/manifests").mkdir(parents=True)
+
+    img_csv = (image_ws / "training/manifests/train.csv").resolve()
+    data_csv = (data_mount / "training/manifests/train.csv").resolve()
+
+    # Create two files with DIFFERENT content
+    img_csv.write_text("patch_path,domain,split\npatches/clean_v1.png,clean,train\n")
+    data_csv.write_text("patch_path,domain,split\npatches/clean_v2_DIFFERENT.png,clean,train\n")
+
+    # 1. Calling with absolute path to image_ws file and data_root=data_mount must FAIL-CLOSED
+    with pytest.raises(ValueError, match="Manifest consistency check FAILED"):
+        verify_manifest_consistency(img_csv, data_root=data_mount)
+
+    # 2. Calling with absolute path to data_mount file and data_root=data_mount must also FAIL-CLOSED
+    with pytest.raises(ValueError, match="Manifest consistency check FAILED"):
+        verify_manifest_consistency(data_csv, data_root=data_mount)
+
+    # 3. Matching contents must pass and return verified path
+    data_csv.write_text("patch_path,domain,split\npatches/clean_v1.png,clean,train\n")
+    resolved = verify_manifest_consistency(img_csv, data_root=data_mount)
+    assert resolved.exists()
+    assert resolved.read_text() == "patch_path,domain,split\npatches/clean_v1.png,clean,train\n"

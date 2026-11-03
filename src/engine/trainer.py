@@ -304,6 +304,11 @@ class DefectGANTrainer:
                 self.opt_g.zero_grad(set_to_none=True)
                 self.opt_d.zero_grad(set_to_none=True)
                 raise
+
+            # Record training peak CUDA memory before validation can alter or reset memory stats
+            train_peak_alloc = torch.cuda.max_memory_allocated(self.device) if self.device.type == 'cuda' else None
+            train_peak_res = torch.cuda.max_memory_reserved(self.device) if self.device.type == 'cuda' else None
+
             # A bounded run that did not exhaust its loader cannot resume at
             # the next epoch, even if all accumulated gradients were stepped.
             completed_epoch = limit == total
@@ -322,10 +327,14 @@ class DefectGANTrainer:
             else:
                 self.save_checkpoint(self.checkpoint_dir / 'dry_run_partial_unsafe.pth', safe_to_resume=False)
 
+            val_peak_alloc = None
+            val_peak_res = None
             is_best = False
             if self.val_loader and ((epoch + 1) % cfg.get('validation_interval', 1) == 0 or dry_run):
                 try:
                     metrics = self.evaluator.evaluate(epoch, save_samples=(epoch + 1) % cfg.get('sample_interval', 5) == 0 or dry_run)
+                    val_peak_alloc = metrics.get('val_peak_cuda_allocated_bytes')
+                    val_peak_res = metrics.get('val_peak_cuda_reserved_bytes')
                     score = metrics['val_cyc_normal'] + metrics['val_cyc_defect']
                     if not np.isfinite(score):
                         raise ValueError(f'Non-finite validation metric: {score}')
@@ -343,6 +352,16 @@ class DefectGANTrainer:
                     if self.device.type == 'cuda':
                         torch.cuda.empty_cache()
                     raise
+
+            if self.device.type == 'cuda':
+                alloc_candidates = [v for v in (train_peak_alloc, val_peak_alloc) if v is not None]
+                res_candidates = [v for v in (train_peak_res, val_peak_res) if v is not None]
+                overall_peak_alloc = max(alloc_candidates) if alloc_candidates else None
+                overall_peak_res = max(res_candidates) if res_candidates else None
+            else:
+                overall_peak_alloc = None
+                overall_peak_res = None
+
         if dry_run:
             changed=[any(not torch.equal(a,b) for a,b in zip(before,params)) for before,params in zip(snapshots,(self.g_params,self.d_params))]
             evidence=dict(generator_changed=changed[0],discriminator_changed=changed[1],
@@ -355,8 +374,15 @@ class DefectGANTrainer:
                           checkpoint_schema=2,resume_policy='epoch_boundary_only',
                           completed_epoch=epoch if completed_epoch else None,next_epoch=self.current_epoch,
                           safe_to_resume=completed_epoch,
-                          smoke_only=True,microbatches=limit,peak_cuda_allocated_bytes=torch.cuda.max_memory_allocated(self.device) if self.device.type=='cuda' else None,
-                          peak_cuda_reserved_bytes=torch.cuda.max_memory_reserved(self.device) if self.device.type=='cuda' else None)
+                          smoke_only=True,microbatches=limit,
+                          peak_cuda_train_allocated_bytes=train_peak_alloc,
+                          peak_cuda_train_reserved_bytes=train_peak_res,
+                          peak_cuda_val_allocated_bytes=val_peak_alloc,
+                          peak_cuda_val_reserved_bytes=val_peak_res,
+                          peak_cuda_overall_allocated_bytes=overall_peak_alloc,
+                          peak_cuda_overall_reserved_bytes=overall_peak_res,
+                          peak_cuda_allocated_bytes=overall_peak_alloc,
+                          peak_cuda_reserved_bytes=overall_peak_res)
             (self.output_dir/'dry_run_evidence.json').write_text(json.dumps(evidence,indent=2),encoding='utf-8')
             if not all(changed):
                 raise RuntimeError('Dry-run did not change both generator and discriminator weights')

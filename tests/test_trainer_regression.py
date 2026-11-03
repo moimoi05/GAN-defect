@@ -405,3 +405,138 @@ def test_real_cuda_amp_gradscaler_overflow(tmp_path):
     assert trainer.discriminator_skipped_steps == 1
     assert trainer.discriminator_updates == 0
     assert trainer.scaler_d.get_scale() < scale_start
+
+
+def test_peak_cuda_vram_train_val_overall_tracking(tmp_path, monkeypatch):
+    """Regression test: evaluator reset does not erase training peak memory in dry_run_evidence.json."""
+    from contextlib import nullcontext
+    import json
+    trainer = make_trainer(tmp_path, 1, 1)
+
+    class MockCudaDevice:
+        type = 'cuda'
+        index = 0
+        def __str__(self):
+            return 'cuda:0'
+        def __repr__(self):
+            return 'MockCudaDevice(cuda:0)'
+
+    mock_device = MockCudaDevice()
+    trainer.device = mock_device
+    trainer.evaluator.device = mock_device
+
+    # Mock tensor movement to avoid PyTorch CPU-only "Torch not compiled with CUDA enabled"
+    monkeypatch.setattr(torch.Tensor, 'to', lambda self, *a, **kw: self)
+
+    def mock_train_step(*a, **kw):
+        trainer.discriminator_updates += 1
+        for p in trainer.d_params:
+            p.data.add_(1.0)
+            break
+        return {'d_loss': 0.1}
+
+    def mock_generator_step(*a, **kw):
+        trainer.generator_updates += 1
+        for p in trainer.g_params:
+            p.data.add_(1.0)
+            break
+        return {'g_loss': 0.1}
+
+    monkeypatch.setattr(trainer, 'train_step', mock_train_step)
+    monkeypatch.setattr(trainer, '_generator_step', mock_generator_step)
+
+    current_state = {'reset_count': 0}
+
+    def mock_reset(device=None):
+        current_state['reset_count'] += 1
+
+    def mock_max_allocated(device=None):
+        if current_state['reset_count'] <= 1:
+            return 500 * 1024 * 1024
+        return 200 * 1024 * 1024
+
+    def mock_max_reserved(device=None):
+        if current_state['reset_count'] <= 1:
+            return 600 * 1024 * 1024
+        return 250 * 1024 * 1024
+
+    monkeypatch.setattr(torch.cuda, 'reset_peak_memory_stats', mock_reset)
+    monkeypatch.setattr(torch.cuda, 'max_memory_allocated', mock_max_allocated)
+    monkeypatch.setattr(torch.cuda, 'max_memory_reserved', mock_max_reserved)
+
+    def mock_evaluate(epoch, save_samples=True):
+        mock_reset(mock_device)
+        return {
+            'val_cyc_normal': 0.1,
+            'val_cyc_defect': 0.1,
+            'val_peak_cuda_allocated_bytes': mock_max_allocated(mock_device),
+            'val_peak_cuda_reserved_bytes': mock_max_reserved(mock_device),
+        }
+
+    monkeypatch.setattr(trainer.evaluator, 'evaluate', mock_evaluate)
+
+    trainer.val_loader = [{'normal': torch.ones(1, 3, 4, 4), 'defect': torch.zeros(1, 3, 4, 4)}]
+    trainer.train(dry_run=True)
+
+    assert current_state['reset_count'] == 2
+
+    evidence_file = trainer.output_dir / 'dry_run_evidence.json'
+    assert evidence_file.exists()
+    evidence = json.loads(evidence_file.read_text(encoding='utf-8'))
+
+    # Verify train peak was preserved despite evaluator reset
+    assert evidence['peak_cuda_train_allocated_bytes'] == 500 * 1024 * 1024
+    assert evidence['peak_cuda_train_reserved_bytes'] == 600 * 1024 * 1024
+
+    # Verify val peak was measured separately
+    assert evidence['peak_cuda_val_allocated_bytes'] == 200 * 1024 * 1024
+    assert evidence['peak_cuda_val_reserved_bytes'] == 250 * 1024 * 1024
+
+    # Verify overall peak is max(train, val), not wiped out by evaluator reset
+    assert evidence['peak_cuda_overall_allocated_bytes'] == 500 * 1024 * 1024
+    assert evidence['peak_cuda_overall_reserved_bytes'] == 600 * 1024 * 1024
+    assert evidence['peak_cuda_allocated_bytes'] == 500 * 1024 * 1024
+    assert evidence['peak_cuda_reserved_bytes'] == 600 * 1024 * 1024
+
+
+def test_evaluator_peak_cuda_vram_reporting(tmp_path, monkeypatch):
+    """Evaluator resets CUDA peak stats on enter and records val peak stats in results."""
+    from contextlib import nullcontext
+    from src.engine.evaluator import DefectGANEvaluator
+
+    class MockCudaDevice:
+        type = 'cuda'
+        index = 0
+
+    mock_dev = MockCudaDevice()
+    val_loader = [{'normal': torch.ones(1, 3, 4, 4), 'defect': torch.zeros(1, 3, 4, 4)}]
+    evaluator = DefectGANEvaluator(TinyModel(), TinyLoss(), val_loader, mock_dev,
+                                  tmp_path, use_amp=False, amp_dtype=torch.float32)
+
+    reset_calls = []
+    monkeypatch.setattr(torch.cuda, 'reset_peak_memory_stats', lambda dev: reset_calls.append(dev))
+    monkeypatch.setattr(torch.cuda, 'max_memory_allocated', lambda dev: 123456)
+    monkeypatch.setattr(torch.cuda, 'max_memory_reserved', lambda dev: 234567)
+
+    # Avoid device mismatch in mock forward pass
+    monkeypatch.setattr(evaluator, '_autocast', lambda: nullcontext())
+    monkeypatch.setattr(evaluator.model, 'defacement', lambda x, c: {'output': x, 'mask': torch.zeros(1, 1, 4, 4)})
+    monkeypatch.setattr(evaluator.model, 'restoration', lambda x, c: {'output': x, 'mask': torch.zeros(1, 1, 4, 4)})
+    monkeypatch.setattr(evaluator.model, 'discriminate_defect', lambda x: [torch.zeros(1, 1, 4, 4)])
+    monkeypatch.setattr(evaluator.model, 'discriminate_normal', lambda x: [torch.zeros(1, 1, 4, 4)])
+    monkeypatch.setattr(evaluator.criterion, 'compute_generator_loss', lambda **kw: (torch.tensor(0.0), {'g_loss': 0.1}))
+    monkeypatch.setattr(evaluator.criterion, 'compute_discriminator_loss', lambda **kw: (torch.tensor(0.0), {'d_loss': 0.1}))
+
+    # Mock tensor .to() to bypass CUDA check on CPU torch
+    orig_to = torch.Tensor.to
+    monkeypatch.setattr(torch.Tensor, 'to', lambda self, *a, **kw: self)
+
+    # Mock torch.ones to avoid device='cuda' error on CPU torch
+    orig_ones = torch.ones
+    monkeypatch.setattr(torch, 'ones', lambda *a, **kw: orig_ones(*a, **{k: v for k, v in kw.items() if k != 'device'}))
+
+    metrics = evaluator.evaluate(0, save_samples=False)
+
+    assert len(reset_calls) == 1
+    assert metrics['val_peak_cuda_allocated_bytes'] == 123456
+    assert metrics['val_peak_cuda_reserved_bytes'] == 234567

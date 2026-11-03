@@ -28,14 +28,51 @@ def verify_manifest_consistency(
     """
     raw_path = Path(manifest_path)
     data_root_path = Path(data_root or os.environ.get("DATA_DIR", ".")).resolve()
-    project_root = Path(__file__).resolve().parent.parent.parent
+    project_root = Path(__file__).resolve().parent.parent.parent.resolve()
+    cwd = Path.cwd().resolve()
 
     candidates = []
     if raw_path.is_absolute():
-        candidates.append(raw_path)
+        resolved_raw = raw_path.resolve()
+        candidates.append(resolved_raw)
+
+        # Determine relative subpath and locate candidate in counterpart tree
+        rel_in_proj = None
+        rel_in_data = None
+
+        try:
+            rel_in_proj = resolved_raw.relative_to(project_root)
+        except ValueError:
+            pass
+
+        try:
+            rel_in_data = resolved_raw.relative_to(data_root_path)
+        except ValueError:
+            pass
+
+        if rel_in_proj is not None and rel_in_data is None:
+            # raw_path is inside project_root; counterpart is in data_root_path
+            candidates.append((data_root_path / rel_in_proj).resolve())
+        elif rel_in_data is not None and rel_in_proj is None:
+            # raw_path is inside data_root_path; counterpart is in project_root / cwd
+            candidates.append((project_root / rel_in_data).resolve())
+            candidates.append((cwd / rel_in_data).resolve())
+        elif rel_in_proj is not None and rel_in_data is not None:
+            # Both trees are the same directory or one is inside the other
+            pass
+        else:
+            # raw_path is outside both project_root and data_root_path (e.g. in test tmp_path).
+            # Look for matching suffix in data_root_path from longest to shortest.
+            parts = resolved_raw.parts
+            for i in range(len(parts)):
+                sub = Path(*parts[i:])
+                target = (data_root_path / sub).resolve()
+                if target.is_file() and target != resolved_raw:
+                    candidates.append(target)
+                    break
     else:
         candidates.append((data_root_path / raw_path).resolve())
-        candidates.append((Path.cwd() / raw_path).resolve())
+        candidates.append((cwd / raw_path).resolve())
         candidates.append((project_root / raw_path).resolve())
 
     existing = []

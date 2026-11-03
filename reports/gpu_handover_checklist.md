@@ -4,6 +4,7 @@
 - [ ] Mount dataset đầy đủ tại `/workspace/data:ro` và output tại `/workspace/outputs` writable; chạy `validate-data` và xác nhận 114 patch, split 72/17/25, 39 replacements, không leakage/patch loại.
 - [ ] Thu thập `nvidia-smi` và `check-env` với output được mount: GPU model/count, total/free VRAM, driver, torch/CUDA, FP16/BF16, OS và Docker. Đây là số liệu thực đo, không phải dự đoán khả năng chạy.
 - [ ] Chạy container pytest và CPU smoke; ghi command, exit code và log.
+- [ ] Chạy CUDA FP16 hardware acceptance gate: `pytest tests/test_trainer_regression.py -k test_real_cuda_amp_gradscaler_overflow -v`. Xác nhận native `torch.cuda.amp.GradScaler` trên phần cứng GPU thực tế xử lý FP16 overflow bằng cơ chế skip và hạ scale factor. Khi chưa có GPU, gate này bắt buộc ghi nhận trạng thái NOT_RUN; tuyệt đối không coi CPU mock là bằng chứng FP16 phần cứng.
 - [ ] Chạy `gpu-smoke` như hướng dẫn; xác minh 1024 RGB batch, G/critic forward, các thành phần loss, backward, weight update G/D và loss/gradient hữu hạn.
 - [ ] Ghi peak allocated/reserved VRAM, checkpoint và trạng thái resume, RGB inference và kiểm tra output ban đầu. Nếu một stage lỗi, không đánh dấu các stage phụ thuộc PASS.
 - [ ] Chỉ sau smoke thành công, dựa trên số đo để xem xét batch, accumulation, AMP, workers và lịch training; không tự thay đổi kiến trúc hoặc dataset baseline để xử lý OOM.
