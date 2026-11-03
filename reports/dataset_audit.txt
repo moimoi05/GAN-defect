@@ -1,0 +1,110 @@
+================================================================================
+                       DEFECT-GAN DATASET AUDIT REPORT
+================================================================================
+
+1. TỔNG QUAN SỐ LƯỢNG ẢNH
+--------------------------------------------------------------------------------
+- F971 OK : 137 ảnh
+- F971 NG : 49 ảnh (đã loại ảnh chưa annotation theo quyết định triển khai)
+- S942 OK : 34 ảnh
+- TỔNG CỘNG: 220 ảnh RGB trong dataset làm việc
+- dataset_manifest.csv: 220 dòng dữ liệu (không tính header)
+
+2. COCO POLYGON JSON
+--------------------------------------------------------------------------------
+- COCO chuẩn hóa: F971/NG/annotations/coco.json
+- Ảnh trong COCO chuẩn hóa: 49
+- Annotation Polygon: 245
+- Category ID 1: scratch
+- Tất cả annotation tham chiếu image_id còn tồn tại; không có annotation nào tham chiếu image_id 34.
+- Ảnh 2026-09-09-14-21-22.jpg (image_id 34) không còn trong dataset làm việc hoặc COCO chuẩn hóa.
+- coco_original.json được giữ nguyên byte-for-byte, gồm 50 image records và 245 annotations.
+- SHA-256 coco_original.json: e0b37e6ede616baa79a698b88261c5a4012da15ca00c75bdc4359dcbdc8b9528
+- Annotation audit: 245 dòng annotation hợp lệ.
+
+3. ĐỘ PHÂN GIẢI VÀ KHÔNG GIAN MÀU
+--------------------------------------------------------------------------------
+- F971 OK (137 ảnh): 5239x3359 đến 5399x3554, JPEG, RGB 3 kênh.
+- F971 NG (49 ảnh): 5404x2964 đến 6311x5834, JPEG, RGB 3 kênh.
+- S942 OK (34 ảnh): 11004x5599, JPEG, RGB 3 kênh.
+- Pillow giải mã thành công toàn bộ 220 ảnh làm việc; chế độ màu của mọi ảnh là RGB.
+- Không resize ảnh nguồn và không chuyển Grayscale.
+
+4. QUYẾT ĐỊNH LOẠI ẢNH CHƯA ANNOTATION
+--------------------------------------------------------------------------------
+- Đã xóa bản làm việc F971/NG/images/2026-09-09-14-21-22.jpg.
+- Đã xóa image record ID 34 khỏi coco.json; không có annotation nào tham chiếu ID này.
+- coco_original.json không bị chỉnh sửa.
+- Không thao tác trên dữ liệu ngoài GAN_Project.
+- Ghi chú: source_path của ảnh trong manifest cũ trỏ đến
+  D:/RTC/RD/image/F971_Scratch/ready_for_roboflow/2026-09-09-14-21-22.jpg,
+  nhưng đường dẫn đó không tồn tại tại thời điểm kiểm tra. Không có dữ liệu ngoài dự án
+  nào được thay đổi; vì vậy không thể xác minh bản nguồn ở đường dẫn ghi trong manifest.
+
+5. THỐNG KÊ SCRATCH TRƯỚC KHI CROP
+--------------------------------------------------------------------------------
+- 49 ảnh NG có nhãn; 245 annotations.
+- Chiều dài bbox ước lượng bằng cạnh dài axis-aligned: min 8 px, median 156.35 px,
+  p90 608.18 px, p95 830 px, max 1385 px.
+- Chiều rộng bbox ước lượng bằng cạnh ngắn axis-aligned: min 1 px, median 71.22 px,
+  p90 208.70 px, p95 269 px, max 407 px.
+- Polygon area: min 8 px^2, median 11200.63 px^2, p90 127890 px^2,
+  p95 176530 px^2, max 337810 px^2.
+- Phân bố chiều dài bbox: <32 px: 19; 32-63 px: 46; 64-127 px: 48;
+  128-255 px: 59; 256-511 px: 37; 512-1023 px: 28; >=1024 px: 8.
+- CSV chi tiết: reports/scratch_bbox_statistics.csv.
+- Tóm tắt: reports/scratch_bbox_summary.txt.
+
+6. CHIA TẬP VÀ PATCH RGB
+--------------------------------------------------------------------------------
+- Chia theo ảnh nguồn trước khi crop, seed 20261102. Không ảnh nguồn nào xuất hiện ở
+  nhiều split. Hai kích thước được lưu trong các thư mục experiment riêng.
+- F971 NG source images: train 33, validation 8, test 8.
+- F971 OK source images: train 96, validation 21, test 20.
+- Mỗi patch là PNG lossless, RGB 8-bit, 3 kênh, đúng kích thước, không resize.
+- Patch dương tính được crop từ F971 NG; patch clean được lấy từ F971 OK.
+- Không lưu binary mask. Polygon được dịch sang tọa độ patch trong instances.json.
+
+Experiment A — 512x512 baseline:
+- Tổng: 142 patches = 71 defect + 71 clean; tỷ lệ patch có lỗi: 50%.
+- Train: 42 defect + 42 clean; validation: 9 + 9; test: 20 + 20.
+- COCO annotations trong patch: 285; source annotations có ít nhất một crop đầy đủ: 209/245.
+- 36 annotations có bbox vượt 512 px nên không thể giữ trọn trong patch 512.
+- 29 patches có Scratch lân cận đi qua mép; các ID này được liệt kê riêng.
+- Dữ liệu: experiments/patches_512x512/.
+
+Experiment B — 1024x1024 cho Scratch dài/bbox lớn:
+- Tổng: 134 patches = 67 defect + 67 clean; tỷ lệ patch có lỗi: 50%.
+- Train: 41 defect + 41 clean; validation: 9 + 9; test: 17 + 17.
+- COCO annotations trong patch: 392; source annotations có ít nhất một crop đầy đủ: 237/245.
+- 8 annotations có bbox vượt 1024 px nên không thể giữ trọn trong patch 1024.
+- 16 patches có Scratch lân cận đi qua mép; các ID này được liệt kê riêng.
+- Dữ liệu: experiments/patches_1024x1024/.
+
+7. PREVIEW VÀ CÁC BÁO CÁO PATCH
+--------------------------------------------------------------------------------
+- Preview RGB ở độ phân giải patch gốc và contact sheet overlay:
+  reports/patch_preview/patches_512x512/ và reports/patch_preview/patches_1024x1024/.
+- Polygon overlay chỉ dùng để kiểm tra trực quan, không nằm trong thư mục training.
+- Chỉ các polygon nằm trọn trong patch được ghi vào COCO patch JSON.
+- Crop loại trừ: reports/crop_exclusions_512.csv và reports/crop_exclusions_1024.csv.
+- Scratch lân cận chạm mép: reports/partial_neighbor_crops_512.csv và
+  reports/partial_neighbor_crops_1024.csv.
+- Manifest split ảnh nguồn: reports/source_image_splits.csv.
+- Số lượng patch và tỷ lệ theo split: reports/patch_generation_report.txt.
+
+8. ĐỀ XUẤT TRAINING (CHƯA THỰC HIỆN)
+--------------------------------------------------------------------------------
+- Máy hiện tại nhận diện Intel Iris Xe Graphics 1 GB; chưa thấy NVIDIA CUDA GPU.
+- Đề xuất máy train: một NVIDIA GPU có VRAM từ 24 GB.
+- Baseline 512x512: khởi điểm batch size 4, mixed precision; giảm xuống 2 hoặc 1 nếu thiếu VRAM.
+- Experiment 1024x1024: khởi điểm batch size 1; dùng gradient accumulation để đạt effective batch 2-4.
+- Kiến trúc đề xuất: encoder-decoder Defect-GAN RGB; spatial condition từ polygon được dựng
+  thành tensor nội bộ; SPADE, learned noise injection, foreground + alpha/spatial map,
+  compositing đầu ra RGB 3 kênh, PatchGAN discriminator và restoration/cycle path.
+- Chi tiết và nguồn tham khảo nằm trong reports/training_recommendation.txt.
+- Chưa train GAN; chờ người dùng duyệt patch preview.
+
+================================================================================
+END OF REPORT
+================================================================================

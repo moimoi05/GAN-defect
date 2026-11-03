@@ -1,0 +1,18 @@
+{
+  "clean_originals_audited": 67,
+  "clean_originals_retained": 28,
+  "clean_replacements": 39,
+  "scratch31_keep": 28,
+  "scratch31_hold": 3,
+  "edge_crops_dropped": 16,
+  "edge_recrop_candidates": 0,
+  "oversize_annotations_retained": 8,
+  "strict_1024_review_candidates": 114,
+  "source_image_leakage": false,
+  "coco_images": 49,
+  "coco_annotations": 245,
+  "rgb_crop_pixel_exact_checks_passed": 49,
+  "rgb_crop_pixel_exact_checks_total": 49,
+  "binary_mask_png_count": 0,
+  "training_started": false
+}

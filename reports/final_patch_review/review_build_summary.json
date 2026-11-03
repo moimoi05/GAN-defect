@@ -1,0 +1,19 @@
+{
+  "1024 source patches": 134,
+  "1024 positive patches selected for representative sheet": 20,
+  "1024 clean patches selected for representative sheet": 10,
+  "1024 clean patches queued for full visual audit": 67,
+  "1024 edge-partial patches": 16,
+  "512 comparison patches": 10,
+  "native Scratch ROI crops": 6,
+  "unique patch files visually reviewed": 113,
+  "1024 clean visual pass": 67,
+  "1024 representative Scratch visual pass": 20,
+  "1024 clipped-neighbor Scratch fail for strict baseline": 16,
+  "512 comparison samples visually reviewed": 10,
+  "RGB PNG outputs": 83,
+  "binary mask PNG outputs": 0,
+  "native patch copy hash mismatches": 0,
+  "native ROI pixel mismatches": 0,
+  "1024 positive patches held for individual visual review": 31
+}

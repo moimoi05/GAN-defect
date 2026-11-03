@@ -1,0 +1,51 @@
+PATCH DATA PREPARATION REPORT
+Root: D:\RTC\RD\GAN_Project
+Seed: 20261102
+Split unit: source image; all patches from one source image belong to one split.
+Patch encoding: lossless RGB PNG, 8-bit, 3 channels; no resize or color conversion.
+Defect crops are created from F971 NG images; clean crops are sampled from F971 OK images.
+COCO polygon coordinates are translated into patch coordinates in each experiment's instances.json.
+No masks are saved. Spatial maps, if used in model code, must be generated internally from polygon coordinates.
+Each target polygon in a positive crop is complete. Other source polygons that intersect the crop but do not fit wholly are excluded from that crop's COCO and listed in reports/partial_neighbor_crops_512.csv or reports/partial_neighbor_crops_1024.csv.
+
+SOURCE IMAGE SPLITS
+- train: F971 NG 33 source images; F971 OK 96 source images
+- validation: F971 NG 8 source images; F971 OK 21 source images
+- test: F971 NG 8 source images; F971 OK 20 source images
+
+EXPERIMENT 512x512
+- Output directory: D:\RTC\RD\GAN_Project\experiments\patches_512x512
+- Total patches: 142; defect: 71; clean: 71
+- Defect prevalence: 50.0%
+- Source annotations fully included: 209 / 245
+- Annotations excluded without clipping: 36
+- COCO patch annotations: 285
+- Patches with a neighboring Scratch partially visible at an edge: 29; see reports/partial_neighbor_crops_512.csv
+  - train: defect 42; clean 42; total 84
+  - validation: defect 9; clean 9; total 18
+  - test: defect 20; clean 20; total 40
+- Excluded source annotation IDs: 36; see reports/crop_exclusions_512.csv
+- Preview: reports/patch_preview/patches_512x512/rgb_samples.png and polygon_overlay_samples.png
+
+EXPERIMENT 1024x1024
+- Output directory: D:\RTC\RD\GAN_Project\experiments\patches_1024x1024
+- Total patches: 134; defect: 67; clean: 67
+- Defect prevalence: 50.0%
+- Source annotations fully included: 237 / 245
+- Annotations excluded without clipping: 8
+- COCO patch annotations: 392
+- Patches with a neighboring Scratch partially visible at an edge: 16; see reports/partial_neighbor_crops_1024.csv
+  - train: defect 41; clean 41; total 82
+  - validation: defect 9; clean 9; total 18
+  - test: defect 17; clean 17; total 34
+- Excluded source annotation IDs: 8; see reports/crop_exclusions_1024.csv
+- Preview: reports/patch_preview/patches_1024x1024/rgb_samples.png and polygon_overlay_samples.png
+
+PROPOSED TRAINING START POINT (not started)
+- 512x512 baseline: one NVIDIA GPU with 24 GB VRAM or more; start batch size 4 with mixed precision.
+- 1024x1024 comparison: same GPU; start batch size 1, use gradient accumulation for effective batch size 2-4.
+- Reduce batch size if peak memory exceeds the hardware; use gradient checkpointing before resizing patches.
+- Recommended model: RGB encoder-decoder Defect-GAN with SPADE spatial conditioning, learned noise injection,
+  defect-foreground plus alpha/spatial-map outputs, RGB compositing, PatchGAN source discriminator, and
+  the restoration/cycle path. Polygon-derived conditions remain tensors internal to training/inference.
+- Training has not been run.

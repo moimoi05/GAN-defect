@@ -1,0 +1,213 @@
+FINAL PATCH REVIEW REPORT — Defect-GAN (visual QA only)
+================================================================
+Workspace: D:\RTC\RD\GAN_Project
+Output: D:\RTC\RD\GAN_Project\reports\final_patch_review
+Review scope: no GAN training or inference was run.
+
+1. Số lượng patch và kết quả kiểm tra
+- Bộ 1024x1024 hiện có: 134 patch (67 có Scratch, 67 clean), tỷ lệ 50/50.
+- Đã kiểm tra trực quan ở 1024: 20 patch Scratch đại diện + 16 patch có Scratch lân cận bị cắt + 67 patch clean = 103 patch duy nhất.
+- Bộ 512x512 hiện có: 142 patch (71 có Scratch, 71 clean); đã kiểm tra mẫu so sánh 10 patch (5 Scratch, 5 clean).
+- Tổng số patch duy nhất đã kiểm tra: 113; 10 patch clean trong contact sheet chính nằm trong 67 patch clean đã kiểm tra, không tính trùng.
+- Kết quả clean: 67/67 PASS_NO_OBVIOUS_SCRATCH; không thấy Scratch rõ tương tự mẫu NG. Vân gia công mảnh trên bề mặt kim loại được giữ nguyên và không bị tự động gán lỗi.
+- Kết quả patch Scratch đại diện 1024: 20/20 PASS; polygon mục tiêu nằm trọn trong crop.
+- Trường hợp cần loại khỏi baseline nghiêm ngặt: 16/16 patch có polygon Scratch lân cận bị cắt qua mép (đoạn đỏ trong overlay). Patch chứa Scratch được gán nhãn đầy đủ vẫn hiện diện, nhưng có thêm lỗi không trọn hình.
+- Mã patch edge bị cắt: 5, 6, 7, 8, 9, 10, 11, 13, 16, 17, 18, 20, 30, 46, 47, 48.
+- Mẫu 512: 5 Scratch + 5 clean, đạt cho so sánh thị giác; chỉ dùng trong experiment 512 riêng.
+- 31 patch Scratch 1024 không nằm trong 20 mẫu đại diện và chưa được kiểm tra từng patch.
+- Khuyến nghị cho 31 patch này: HOLD_PENDING_VISUAL_REVIEW; danh sách chi tiết ở unreviewed_positive_1024.csv.
+
+2. Kết quả đạt yêu cầu
+- 20 patch Scratch 1024 đại diện cho các dải chiều dài khác nhau: giữ làm ứng viên baseline; xem review_sample_manifest.csv để biết tên, ảnh nguồn, split, số annotation và chiều dài lớn nhất.
+- 67 patch clean 1024: giữ làm ứng viên clean sau kiểm tra trực quan; không phát hiện Scratch rõ trên preview RGB. Đây là đánh giá bằng mắt, không thay thế duyệt chuyên môn cuối cùng.
+- 10 patch 512: giữ trong experiment so sánh 512 riêng, không gộp vào baseline 1024.
+- 6 ROI Scratch được trích ở tọa độ và độ phân giải pixel gốc (kích thước thay đổi theo bbox + context); file *_rgb.png là ảnh RGB nguyên bản, *_polygon_overlay.png chỉ là bản xem có nét polygon.
+
+3. Trường hợp lỗi và quyết định từng patch
+- 16/16 edge cases: DROP_FROM_STRICT_1024_BASELINE. Nguyên nhân là một hoặc nhiều Scratch lân cận chỉ còn một phần trong crop; ID polygon bị ảnh hưởng và số lượng được ghi riêng trong edge_case_review.csv.
+- Đề xuất xử lý: không đưa 16 patch này vào tập train baseline ở trạng thái hiện tại. Nếu muốn tận dụng, tạo crop lại từ ảnh nguồn sao cho mọi Scratch trong vùng đều trọn hình; giữ nguyên RGB và không resize.
+- 8 annotation không thể vừa crop 1024 ở kích thước pixel gốc đã được ghi trong crop_exclusions_1024.csv; không xuất hiện dưới dạng target đầy đủ trong baseline 1024. Cần patch lớn hơn hoặc giữ ngoài experiment này.
+
+4. Kiểm tra RGB và tính toàn vẹn artifact
+- Patch mẫu được lưu ở kích thước gốc 1024x1024 hoặc 512x512, mode RGB 3 kênh; SHA-256 của bản copy trong native_samples trùng với file patch gốc (40 mẫu).
+- Sheet ghép ảnh dùng từng tile native-size, thêm footer riêng để ghi tên patch/ảnh nguồn; không resize pixel ảnh tile.
+- Overlay polygon được lưu thành preview RGB riêng: polygon đầy đủ màu vàng, phần polygon bị cắt màu đỏ. File patch RGB gốc không bị vẽ đè.
+- ROI RGB và overlay ROI giữ cùng kích thước crop gốc; 83 PNG trong thư mục review đều RGB; không tạo binary mask PNG.
+- Ảnh nguồn, coco_original.json, dataset làm việc và patch gốc chỉ được đọc; đầu ra mới nằm trong reports/final_patch_review.
+
+5. Thống kê Scratch trước khi crop
+- 245 annotation trên 49 ảnh F971 NG.
+- Chiều dài bbox: min 8 px; P25 60.04; median 156.35; P75 333; P90 608.18; P95 830; max 1385 px.
+- Chiều rộng bbox: min 1 px; P25 35.92; median 71.22; P75 142.52; P90 208.70; P95 269; max 407 px.
+- Có 8 annotation dài hơn khả năng bao trọn của patch 1024; kích thước và bbox đầy đủ nằm trong reports/scratch_bbox_statistics.csv.
+
+6. Kết luận baseline 1024 và đề xuất tài nguyên
+- 1024x1024 là baseline được ưu tiên như quyết định của người dùng. Sau khi loại 16 patch có Scratch lân cận bị cắt, còn 51 crop dương tính về mặt manifest + 67 clean = tối đa 118 crop. Hiện 20/51 crop dương tính đã được xem trực quan; 31 crop còn lại ở trạng thái HOLD_PENDING_VISUAL_REVIEW và không đưa vào train trước khi kiểm tra. Còn 8 annotation quá lớn chưa được đại diện đầy đủ.
+- GPU khởi điểm đề xuất: NVIDIA có ít nhất 24 GB VRAM; 1024x1024 dùng batch size 1, AMP, gradient accumulation để đạt effective batch 2–4. GPU 48 GB cho thêm dư địa bộ nhớ. Đây là ước lượng để profile sau khi được duyệt, chưa train.
+- Kiến trúc khởi điểm: Generator encoder-decoder RGB 3 kênh, điều kiện polygon/spatial tensor nội bộ (SPADE), noise injection cho texture, foreground + alpha nội bộ để composite lên RGB; PatchGAN discriminator và cycle/reconstruction path. Output cuối giữ 3 kênh RGB.
+- Chỉ bắt đầu train sau khi người dùng duyệt patch. 512x512 và 1024x1024 tiếp tục ở hai experiment tách biệt.
+
+7. Danh sách từng trường hợp
+A. 20 patch Scratch 1024 (đề xuất KEEP)
+- KEEP | 2026-09-10-11-32-42_crop002_x4186_y421.png | nguồn 2026-09-10-11-32-42.jpg | split train | annotations 1 | max length 102.77 px
+- KEEP | 2026-09-10-09-23-11_crop002_x2755_y888.png | nguồn 2026-09-10-09-23-11.jpg | split validation | annotations 3 | max length 124.39 px
+- KEEP | 2026-09-19-10-10-43_crop001_x2194_y0.png | nguồn 2026-09-19-10-10-43.jpg | split validation | annotations 1 | max length 120.0 px
+- KEEP | 2026-09-10-11-32-42_crop001_x2402_y647.png | nguồn 2026-09-10-11-32-42.jpg | split train | annotations 4 | max length 154.24 px
+- KEEP | 2026-09-08-09-59-55_crop004_x4758_y1326.png | nguồn 2026-09-08-09-59-55.jpg | split train | annotations 7 | max length 296.47 px
+- KEEP | 2026-09-10-15-51-23_crop002_x1530_y0.png | nguồn 2026-09-10-15-51-23.jpg | split train | annotations 9 | max length 347.0 px
+- KEEP | 2026-09-10-16-10-41_crop001_x415_y448.png | nguồn 2026-09-10-16-10-41.jpg | split train | annotations 3 | max length 358.0 px
+- KEEP | 2026-09-10-16-10-56_crop001_x3390_y60.png | nguồn 2026-09-10-16-10-56.jpg | split train | annotations 1 | max length 416.0 px
+- KEEP | 2026-09-10-16-10-36_crop001_x1677_y624.png | nguồn 2026-09-10-16-10-36.jpg | split train | annotations 1 | max length 507.0 px
+- KEEP | 2026-09-10-16-11-00_crop002_x1869_y651.png | nguồn 2026-09-10-16-11-00.jpg | split validation | annotations 4 | max length 404.0 px
+- KEEP | 2026-09-07-22-22-53_crop008_x4782_y1322.png | nguồn 2026-09-07-22-22-53.jpg | split test | annotations 13 | max length 231.0 px
+- KEEP | 2026-09-10-15-56-22_crop001_x2200_y619.png | nguồn 2026-09-10-15-56-22.jpg | split train | annotations 1 | max length 519.0 px
+- KEEP | 2026-09-10-16-28-06_crop001_x2180_y186.png | nguồn 2026-09-10-16-28-06.jpg | split train | annotations 3 | max length 540.0 px
+- KEEP | 2026-09-10-16-10-36_crop002_x92_y1991.png | nguồn 2026-09-10-16-10-36.jpg | split train | annotations 2 | max length 588.0 px
+- KEEP | 2026-09-10-16-10-51_crop001_x3482_y777.png | nguồn 2026-09-10-16-10-51.jpg | split train | annotations 4 | max length 715.0 px
+- KEEP | 2026-09-09-15-36-17_crop001_x5186_y1622.png | nguồn 2026-09-09-15-36-17.jpg | split train | annotations 1 | max length 828.0 px
+- KEEP | 2026-09-19-13-46-16_crop001_x2590_y514.png | nguồn 2026-09-19-13-46-16.jpg | split train | annotations 1 | max length 887.0 px
+- KEEP | 2026-09-19-13-30-37_crop001_x3721_y474.png | nguồn 2026-09-19-13-30-37.jpg | split validation | annotations 3 | max length 790.0 px
+- KEEP | 2026-09-08-09-59-42_crop001_x1563_y284.png | nguồn 2026-09-08-09-59-42.jpg | split test | annotations 1 | max length 592.0 px
+- KEEP | 2026-09-10-15-57-27_crop001_x77_y180.png | nguồn 2026-09-10-15-57-27.jpg | split test | annotations 1 | max length 870.0 px
+
+B. 67 patch clean 1024 (đề xuất KEEP_AS_CLEAN_CANDIDATE)
+- KEEP | THAN_T_D_1_2026-09-14-11-03-08_x1024_y1024.png | nguồn THAN_T_D_1_2026-09-14-11-03-08.jpg | split test | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_2_2026-09-14-10-56-34_x0_y0.png | nguồn THAN_T_D_2_2026-09-14-10-56-34.jpg | split test | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_2_2026-09-14-11-03-16_x4096_y1024.png | nguồn THAN_T_D_2_2026-09-14-11-03-16.jpg | split test | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_2_2026-09-14-11-07-05_x1024_y2048.png | nguồn THAN_T_D_2_2026-09-14-11-07-05.jpg | split test | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_2_2026-09-14-11-08-03_x1024_y1024.png | nguồn THAN_T_D_2_2026-09-14-11-08-03.jpg | split test | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_2_2026-09-14-14-30-20_x3072_y2048.png | nguồn THAN_T_D_2_2026-09-14-14-30-20.jpg | split test | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_3_2026-09-14-10-53-48_x0_y0.png | nguồn THAN_T_D_3_2026-09-14-10-53-48.jpg | split test | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_3_2026-09-14-11-02-26_x2048_y2048.png | nguồn THAN_T_D_3_2026-09-14-11-02-26.jpg | split test | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_3_2026-09-14-11-02-26_x3072_y0.png | nguồn THAN_T_D_3_2026-09-14-11-02-26.jpg | split test | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_3_2026-09-14-11-02-26_x3072_y2048.png | nguồn THAN_T_D_3_2026-09-14-11-02-26.jpg | split test | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_3_2026-09-14-11-08-12_x4096_y1024.png | nguồn THAN_T_D_3_2026-09-14-11-08-12.jpg | split test | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_4_2026-09-14-11-04-27_x0_y1024.png | nguồn THAN_T_D_4_2026-09-14-11-04-27.jpg | split test | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_4_2026-09-14-11-04-27_x1024_y2048.png | nguồn THAN_T_D_4_2026-09-14-11-04-27.jpg | split test | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_6_2026-09-14-11-09-28_x0_y0.png | nguồn THAN_T_D_6_2026-09-14-11-09-28.jpg | split test | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_6_2026-09-14-11-09-28_x0_y2048.png | nguồn THAN_T_D_6_2026-09-14-11-09-28.jpg | split test | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_6_2026-09-14-11-09-28_x2048_y0.png | nguồn THAN_T_D_6_2026-09-14-11-09-28.jpg | split test | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_6_2026-09-14-11-09-28_x4096_y1024.png | nguồn THAN_T_D_6_2026-09-14-11-09-28.jpg | split test | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_1_2026-09-14-10-49-55_x3072_y1024.png | nguồn THAN_T_D_1_2026-09-14-10-49-55.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_1_2026-09-14-10-54-31_x3072_y1024.png | nguồn THAN_T_D_1_2026-09-14-10-54-31.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_1_2026-09-14-10-57-23_x0_y0.png | nguồn THAN_T_D_1_2026-09-14-10-57-23.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_1_2026-09-14-11-06-59_x2048_y0.png | nguồn THAN_T_D_1_2026-09-14-11-06-59.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_1_2026-09-14-11-10-50_x3072_y1024.png | nguồn THAN_T_D_1_2026-09-14-11-10-50.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_2_2026-09-14-10-55-36_x0_y0.png | nguồn THAN_T_D_2_2026-09-14-10-55-36.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_2_2026-09-14-11-05-11_x3072_y1024.png | nguồn THAN_T_D_2_2026-09-14-11-05-11.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_2_2026-09-14-11-09-01_x3072_y2048.png | nguồn THAN_T_D_2_2026-09-14-11-09-01.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_2_2026-09-14-11-09-01_x4096_y1024.png | nguồn THAN_T_D_2_2026-09-14-11-09-01.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_3_2026-09-14-10-50-12_x0_y0.png | nguồn THAN_T_D_3_2026-09-14-10-50-12.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_3_2026-09-14-10-58-35_x2048_y0.png | nguồn THAN_T_D_3_2026-09-14-10-58-35.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_3_2026-09-14-10-58-35_x3072_y1024.png | nguồn THAN_T_D_3_2026-09-14-10-58-35.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_3_2026-09-14-11-04-20_x0_y2048.png | nguồn THAN_T_D_3_2026-09-14-11-04-20.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_4_2026-09-14-10-53-56_x0_y1024.png | nguồn THAN_T_D_4_2026-09-14-10-53-56.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_4_2026-09-14-10-53-56_x0_y2048.png | nguồn THAN_T_D_4_2026-09-14-10-53-56.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_4_2026-09-14-10-56-49_x1024_y0.png | nguồn THAN_T_D_4_2026-09-14-10-56-49.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_4_2026-09-14-10-57-44_x3072_y1024.png | nguồn THAN_T_D_4_2026-09-14-10-57-44.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_4_2026-09-14-11-01-33_x1024_y2048.png | nguồn THAN_T_D_4_2026-09-14-11-01-33.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_4_2026-09-14-11-02-33_x4096_y0.png | nguồn THAN_T_D_4_2026-09-14-11-02-33.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_4_2026-09-14-11-06-26_x0_y1024.png | nguồn THAN_T_D_4_2026-09-14-11-06-26.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_4_2026-09-14-11-06-26_x1024_y0.png | nguồn THAN_T_D_4_2026-09-14-11-06-26.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_4_2026-09-14-11-11-12_x3072_y2048.png | nguồn THAN_T_D_4_2026-09-14-11-11-12.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_4_2026-09-14-14-30-32_x0_y0.png | nguồn THAN_T_D_4_2026-09-14-14-30-32.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_5_2026-09-14-10-50-27_x1024_y1024.png | nguồn THAN_T_D_5_2026-09-14-10-50-27.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_5_2026-09-14-10-50-27_x2048_y1024.png | nguồn THAN_T_D_5_2026-09-14-10-50-27.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_5_2026-09-14-10-50-27_x3072_y1024.png | nguồn THAN_T_D_5_2026-09-14-10-50-27.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_5_2026-09-14-10-55-56_x2048_y0.png | nguồn THAN_T_D_5_2026-09-14-10-55-56.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_5_2026-09-14-10-58-50_x1024_y1024.png | nguồn THAN_T_D_5_2026-09-14-10-58-50.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_5_2026-09-14-11-00-45_x4096_y0.png | nguồn THAN_T_D_5_2026-09-14-11-00-45.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_5_2026-09-14-11-01-40_x4096_y2048.png | nguồn THAN_T_D_5_2026-09-14-11-01-40.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_5_2026-09-14-11-05-32_x1024_y1024.png | nguồn THAN_T_D_5_2026-09-14-11-05-32.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_5_2026-09-14-11-09-23_x0_y1024.png | nguồn THAN_T_D_5_2026-09-14-11-09-23.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_5_2026-09-14-11-11-19_x3072_y1024.png | nguồn THAN_T_D_5_2026-09-14-11-11-19.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_6_2026-09-14-10-44-14_x3072_y1024.png | nguồn THAN_T_D_6_2026-09-14-10-44-14.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_6_2026-09-14-10-55-05_x4096_y0.png | nguồn THAN_T_D_6_2026-09-14-10-55-05.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_6_2026-09-14-10-56-59_x0_y1024.png | nguồn THAN_T_D_6_2026-09-14-10-56-59.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_6_2026-09-14-10-58-55_x1024_y1024.png | nguồn THAN_T_D_6_2026-09-14-10-58-55.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_6_2026-09-14-11-02-44_x1024_y0.png | nguồn THAN_T_D_6_2026-09-14-11-02-44.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_6_2026-09-14-11-03-43_x2048_y1024.png | nguồn THAN_T_D_6_2026-09-14-11-03-43.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_6_2026-09-14-11-05-37_x0_y2048.png | nguồn THAN_T_D_6_2026-09-14-11-05-37.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_6_2026-09-14-11-06-37_x2048_y0.png | nguồn THAN_T_D_6_2026-09-14-11-06-37.jpg | split train | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_1_2026-09-14-11-04-06_x4096_y1024.png | nguồn THAN_T_D_1_2026-09-14-11-04-06.jpg | split validation | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_1_2026-09-14-11-05-03_x2048_y0.png | nguồn THAN_T_D_1_2026-09-14-11-05-03.jpg | split validation | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_2_2026-09-14-10-58-29_x3072_y1024.png | nguồn THAN_T_D_2_2026-09-14-10-58-29.jpg | split validation | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_2_2026-09-14-11-06-11_x1024_y2048.png | nguồn THAN_T_D_2_2026-09-14-11-06-11.jpg | split validation | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_2_2026-09-14-11-06-11_x3072_y2048.png | nguồn THAN_T_D_2_2026-09-14-11-06-11.jpg | split validation | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_2_2026-09-14-11-06-11_x4096_y2048.png | nguồn THAN_T_D_2_2026-09-14-11-06-11.jpg | split validation | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_3_2026-09-14-11-05-18_x2048_y1024.png | nguồn THAN_T_D_3_2026-09-14-11-05-18.jpg | split validation | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_3_2026-09-14-11-11-06_x1024_y1024.png | nguồn THAN_T_D_3_2026-09-14-11-11-06.jpg | split validation | no COCO annotations; no obvious Scratch in visual review
+- KEEP | THAN_T_D_5_2026-09-14-11-06-32_x4096_y0.png | nguồn THAN_T_D_5_2026-09-14-11-06-32.jpg | split validation | no COCO annotations; no obvious Scratch in visual review
+
+C. 31 patch Scratch chưa xem từng ảnh (đề xuất HOLD)
+- HOLD | patch_id 1 | 2026-09-06-16-03-49_crop001_x2420_y184.png | nguồn 2026-09-06-16-03-49.jpg | split train | annotations 1
+- HOLD | patch_id 2 | 2026-09-06-16-58-35_crop001_x2274_y662.png | nguồn 2026-09-06-16-58-35.jpg | split validation | annotations 1
+- HOLD | patch_id 3 | 2026-09-07-22-22-41_crop001_x1588_y272.png | nguồn 2026-09-07-22-22-41.jpg | split train | annotations 2
+- HOLD | patch_id 4 | 2026-09-07-22-22-47_crop001_x1524_y273.png | nguồn 2026-09-07-22-22-47.jpg | split train | annotations 1
+- HOLD | patch_id 15 | 2026-09-08-09-59-48_crop001_x1504_y258.png | nguồn 2026-09-08-09-59-48.jpg | split test | annotations 2
+- HOLD | patch_id 21 | 2026-09-08-21-36-42_crop001_x4805_y1289.png | nguồn 2026-09-08-21-36-42.jpg | split test | annotations 1
+- HOLD | patch_id 22 | 2026-09-09-15-26-28_crop001_x4790_y1651.png | nguồn 2026-09-09-15-26-28.jpg | split train | annotations 1
+- HOLD | patch_id 24 | 2026-09-09-21-56-54_crop001_x4408_y376.png | nguồn 2026-09-09-21-56-54.jpg | split train | annotations 1
+- HOLD | patch_id 25 | 2026-09-10-09-23-11_crop001_x4251_y610.png | nguồn 2026-09-10-09-23-11.jpg | split validation | annotations 1
+- HOLD | patch_id 29 | 2026-09-10-11-32-48_crop001_x279_y206.png | nguồn 2026-09-10-11-32-48.jpg | split test | annotations 1
+- HOLD | patch_id 32 | 2026-09-10-15-51-40_crop001_x2020_y598.png | nguồn 2026-09-10-15-51-40.jpg | split train | annotations 1
+- HOLD | patch_id 35 | 2026-09-10-16-10-30_crop001_x4215_y549.png | nguồn 2026-09-10-16-10-30.jpg | split test | annotations 1
+- HOLD | patch_id 36 | 2026-09-10-16-10-30_crop002_x0_y1904.png | nguồn 2026-09-10-16-10-30.jpg | split test | annotations 4
+- HOLD | patch_id 37 | 2026-09-10-16-10-30_crop003_x2783_y15.png | nguồn 2026-09-10-16-10-30.jpg | split test | annotations 3
+- HOLD | patch_id 40 | 2026-09-10-16-10-36_crop003_x2778_y364.png | nguồn 2026-09-10-16-10-36.jpg | split train | annotations 2
+- HOLD | patch_id 42 | 2026-09-10-16-10-41_crop002_x4318_y1116.png | nguồn 2026-09-10-16-10-41.jpg | split train | annotations 1
+- HOLD | patch_id 43 | 2026-09-10-16-10-41_crop003_x0_y883.png | nguồn 2026-09-10-16-10-41.jpg | split train | annotations 1
+- HOLD | patch_id 44 | 2026-09-10-16-10-50_crop001_x4176_y956.png | nguồn 2026-09-10-16-10-50.jpg | split train | annotations 1
+- HOLD | patch_id 50 | 2026-09-10-16-11-00_crop001_x3506_y460.png | nguồn 2026-09-10-16-11-00.jpg | split validation | annotations 1
+- HOLD | patch_id 52 | 2026-09-10-16-11-00_crop003_x74_y1859.png | nguồn 2026-09-10-16-11-00.jpg | split validation | annotations 1
+- HOLD | patch_id 53 | 2026-09-10-16-11-03_crop001_x5216_y1639.png | nguồn 2026-09-10-16-11-03.jpg | split train | annotations 1
+- HOLD | patch_id 54 | 2026-09-10-16-12-09_crop001_x2218_y437.png | nguồn 2026-09-10-16-12-09.jpg | split train | annotations 1
+- HOLD | patch_id 55 | 2026-09-10-16-16-34_crop001_x2155_y198.png | nguồn 2026-09-10-16-16-34.jpg | split train | annotations 3
+- HOLD | patch_id 56 | 2026-09-10-16-22-06_crop001_x2191_y179.png | nguồn 2026-09-10-16-22-06.jpg | split train | annotations 1
+- HOLD | patch_id 58 | 2026-09-12-09-43-34_crop001_x2888_y484.png | nguồn 2026-09-12-09-43-34.jpg | split train | annotations 1
+- HOLD | patch_id 59 | 2026-09-12-15-03-15_crop001_x2807_y468.png | nguồn 2026-09-12-15-03-15.jpg | split validation | annotations 1
+- HOLD | patch_id 60 | 2026-09-17-15-26-43_crop001_x3562_y348.png | nguồn 2026-09-17-15-26-43.jpg | split train | annotations 1
+- HOLD | patch_id 61 | 2026-09-17-15-31-38_crop001_x2399_y874.png | nguồn 2026-09-17-15-31-38.jpg | split train | annotations 1
+- HOLD | patch_id 62 | 2026-09-19-10-03-12_crop001_x3713_y474.png | nguồn 2026-09-19-10-03-12.jpg | split train | annotations 1
+- HOLD | patch_id 63 | 2026-09-19-10-03-13_crop001_x2590_y514.png | nguồn 2026-09-19-10-03-13.jpg | split train | annotations 1
+- HOLD | patch_id 64 | 2026-09-19-10-05-30_crop001_x2864_y736.png | nguồn 2026-09-19-10-05-30.jpg | split train | annotations 1
+
+D. 16 patch có Scratch lân cận bị cắt (đề xuất DROP khỏi strict baseline)
+- DROP | patch_id 5 | 2026-09-07-22-22-53_crop001_x3833_y520.png | nguồn 2026-09-07-22-22-53.jpg | split test | clipped polygon IDs 12|20|21|29|30|40 (6 trường hợp)
+- DROP | patch_id 6 | 2026-09-07-22-22-53_crop002_x2983_y0.png | nguồn 2026-09-07-22-22-53.jpg | split test | clipped polygon IDs 11|25|26 (3 trường hợp)
+- DROP | patch_id 7 | 2026-09-07-22-22-53_crop003_x2959_y342.png | nguồn 2026-09-07-22-22-53.jpg | split test | clipped polygon IDs 24 (1 trường hợp)
+- DROP | patch_id 8 | 2026-09-07-22-22-53_crop004_x4782_y1020.png | nguồn 2026-09-07-22-22-53.jpg | split test | clipped polygon IDs 39|40 (2 trường hợp)
+- DROP | patch_id 9 | 2026-09-07-22-22-53_crop005_x2651_y0.png | nguồn 2026-09-07-22-22-53.jpg | split test | clipped polygon IDs 29|30|31|32|69|71|81 (7 trường hợp)
+- DROP | patch_id 10 | 2026-09-07-22-22-53_crop006_x2620_y0.png | nguồn 2026-09-07-22-22-53.jpg | split test | clipped polygon IDs 29|30|31|32|71|80 (6 trường hợp)
+- DROP | patch_id 11 | 2026-09-07-22-22-53_crop007_x3862_y481.png | nguồn 2026-09-07-22-22-53.jpg | split test | clipped polygon IDs 12|20|21|29|30|44 (6 trường hợp)
+- DROP | patch_id 13 | 2026-09-07-22-22-53_crop009_x2600_y0.png | nguồn 2026-09-07-22-22-53.jpg | split test | clipped polygon IDs 29|30|31|77|79|80 (6 trường hợp)
+- DROP | patch_id 16 | 2026-09-08-09-59-55_crop001_x3542_y431.png | nguồn 2026-09-08-09-59-55.jpg | split train | clipped polygon IDs 111|120|124|127|131|142|148 (7 trường hợp)
+- DROP | patch_id 17 | 2026-09-08-09-59-55_crop002_x2934_y320.png | nguồn 2026-09-08-09-59-55.jpg | split train | clipped polygon IDs 105|107|108|136|137 (5 trường hợp)
+- DROP | patch_id 18 | 2026-09-08-09-59-55_crop003_x2057_y0.png | nguồn 2026-09-08-09-59-55.jpg | split train | clipped polygon IDs 113|114|115 (3 trường hợp)
+- DROP | patch_id 20 | 2026-09-08-09-59-55_crop005_x3629_y128.png | nguồn 2026-09-08-09-59-55.jpg | split train | clipped polygon IDs 111|124|125|128|130|131 (6 trường hợp)
+- DROP | patch_id 30 | 2026-09-10-15-51-23_crop001_x892_y320.png | nguồn 2026-09-10-15-51-23.jpg | split train | clipped polygon IDs 218 (1 trường hợp)
+- DROP | patch_id 46 | 2026-09-10-16-10-51_crop002_x3029_y175.png | nguồn 2026-09-10-16-10-51.jpg | split train | clipped polygon IDs 169 (1 trường hợp)
+- DROP | patch_id 47 | 2026-09-10-16-10-51_crop003_x1885_y799.png | nguồn 2026-09-10-16-10-51.jpg | split train | clipped polygon IDs 164 (1 trường hợp)
+- DROP | patch_id 48 | 2026-09-10-16-10-51_crop004_x2256_y256.png | nguồn 2026-09-10-16-10-51.jpg | split train | clipped polygon IDs 163 (1 trường hợp)
+
+E. 10 patch so sánh 512 (đề xuất KEEP trong experiment riêng)
+- KEEP_512_ONLY | 2026-09-07-22-22-41_crop001_x1249_y638.png | nguồn 2026-09-07-22-22-41.jpg | label defect | split train | annotations 1
+- KEEP_512_ONLY | 2026-09-08-09-59-55_crop008_x5216_y1966.png | nguồn 2026-09-08-09-59-55.jpg | label defect | split train | annotations 2
+- KEEP_512_ONLY | 2026-09-10-15-51-23_crop001_x892_y346.png | nguồn 2026-09-10-15-51-23.jpg | label defect | split train | annotations 4
+- KEEP_512_ONLY | 2026-09-10-16-10-36_crop001_x1933_y880.png | nguồn 2026-09-10-16-10-36.jpg | label defect | split train | annotations 1
+- KEEP_512_ONLY | 2026-09-06-16-58-35_crop001_x2530_y918.png | nguồn 2026-09-06-16-58-35.jpg | label defect | split validation | annotations 1
+- KEEP_512_ONLY | THAN_T_D_1_2026-09-14-10-49-55_x0_y1024.png | nguồn THAN_T_D_1_2026-09-14-10-49-55.jpg | label clean | split train | annotations 0
+- KEEP_512_ONLY | THAN_T_D_3_2026-09-14-10-57-37_x2560_y512.png | nguồn THAN_T_D_3_2026-09-14-10-57-37.jpg | label clean | split train | annotations 0
+- KEEP_512_ONLY | THAN_T_D_5_2026-09-14-10-44-09_x2048_y1024.png | nguồn THAN_T_D_5_2026-09-14-10-44-09.jpg | label clean | split train | annotations 0
+- KEEP_512_ONLY | THAN_T_D_6_2026-09-14-13-56-39_x3584_y2560.png | nguồn THAN_T_D_6_2026-09-14-13-56-39.jpg | label clean | split train | annotations 0
+- KEEP_512_ONLY | THAN_T_D_2_2026-09-14-11-06-11_x3072_y0.png | nguồn THAN_T_D_2_2026-09-14-11-06-11.jpg | label clean | split validation | annotations 0
+
+Artifact contact sheet:
+- contact_sheet_1024_20_scratch_10_clean.png
+- contact_sheet_1024_16_edge_scratch_overlay.png
+- contact_sheet_512_comparison_5_scratch_5_clean.png
+- clean_audit_sheets/clean_audit_01.png ... clean_audit_08.png
+- edge_detail_sheets/edge_detail_01.png ... edge_detail_sheets/edge_detail_04.png
+- native_scratch_crops/ (6 raw RGB crops plus separate polygon overlay previews)
+
+No model training was run.

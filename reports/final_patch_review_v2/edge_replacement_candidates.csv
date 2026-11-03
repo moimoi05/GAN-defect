@@ -1,0 +1,2 @@
+﻿patch_id,source_image,split,crop_x,crop_y,candidate_rgb_png,status
+7,2026-09-07-22-22-53.jpg,test,2988,352,edge_replacement_1024_patch7_x2988_y352.png,REJECTED_FOR_STRICT_1024; TRIAL RECROP STILL CLIPS NEIGHBOR ANNOTATIONS 11|25|26

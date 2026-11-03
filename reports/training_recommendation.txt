@@ -1,0 +1,54 @@
+DEFECT-GAN TRAINING RECOMMENDATION (NOT STARTED)
+================================================
+
+Current workstation
+-------------------
+- Win32VideoController reports Intel Iris Xe Graphics with 1 GB adapter memory.
+- nvidia-smi is unavailable. No NVIDIA CUDA GPU was detected in this environment.
+- Use a separate training workstation or cloud GPU for GAN training.
+
+Suggested GPU and initial batch sizes
+------------------------------------
+- Preferred: one NVIDIA GPU with at least 24 GB VRAM.
+- 512x512 baseline: start at batch size 4 with AMP; lower to 2 or 1 if memory use is too high.
+- 1024x1024 comparison: start at batch size 1 with AMP; use gradient accumulation to reach an
+  effective batch size of 2-4. A 48 GB GPU gives more room for batch size 2 or larger channels.
+- Keep these as separate runs and checkpoints. Do not mix 512 and 1024 patches in one baseline.
+- These batch sizes are estimates for this dataset and a moderate encoder-decoder. Profile the
+  selected implementation on the actual GPU before committing to a run.
+
+Suggested RGB Defect-GAN design
+-------------------------------
+1. Input and output stay RGB, 3 channels, at native patch size. Keep separate 512 and 1024 models.
+2. Use an encoder-decoder generator with a roughly 4x encoder downsampling path.
+3. Build the spatial Scratch condition as an in-memory tensor from the COCO polygons at data-load
+   time. Use SPADE to inject it through decoder blocks. Do not save this tensor as a binary mask.
+4. Inject learned-strength Gaussian noise into generator feature blocks to vary fine Scratch texture.
+5. Have the generator emit a defect foreground and a soft spatial alpha map. Composite them with
+   the normal RGB input: output = input * (1 - alpha) + foreground * alpha. The final output remains
+   RGB 3-channel data; alpha is internal control only.
+6. Use a PatchGAN source discriminator. A defect-category classifier is optional for the current
+   single category (Scratch), and becomes useful if additional defect categories are added.
+7. Use both directions of the unpaired task: normal -> defect -> restored normal and
+   defect -> normal -> restored defect. Include adversarial and reconstruction/cycle losses, plus
+   constraints that discourage the generated spatial map from spreading over the whole patch.
+
+Reference and limits
+--------------------
+- The original Defect-GAN paper describes encoder-decoder generation, SPADE spatial control,
+  adaptive noise injection, foreground/spatial-map composition, and a PatchGAN discriminator.
+- Its reported synthesis setup used 128x128 images, batch size 4, and a single NVIDIA 2080Ti.
+  Those values do not establish memory use for the project's 512x512 and 1024x1024 crops. The
+  proposed 24 GB GPU and smaller 1024 batch size are conservative starting estimates, not a claim
+  that the paper measured these configurations.
+- Source: Zhang et al., “Defect-GAN: High-Fidelity Defect Synthesis for Automated Defect Inspection,”
+  WACV 2021 / arXiv: https://arxiv.org/abs/2103.15158
+
+Data protocol
+-------------
+- Use the train split only for optimization; use validation to select checkpoints; keep test sealed.
+- All splits were assigned by source image before cropping; no source image crosses splits.
+- F971 OK RGB is the normal domain. F971 NG RGB with the original COCO polygons is the defect domain.
+- The current patch sets are small (71 and 67 positive crops before any augmentation). Review the
+  preview and the partial-neighbor reports before deciding whether to include every crop in training.
+- No GAN training has been performed. Wait for visual approval of the RGB patches first.

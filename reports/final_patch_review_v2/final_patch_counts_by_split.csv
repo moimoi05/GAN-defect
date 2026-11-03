@@ -1,0 +1,5 @@
+﻿split,defect_review_approved_candidates,clean_review_approved_candidates,total_review_approved_candidates,training_started
+train,31,41,72,NO
+validation,8,9,17,NO
+test,8,17,25,NO
+TOTAL,47,67,114,NO

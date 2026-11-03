@@ -1,0 +1,2 @@
+﻿source_image,split,target_annotation_ids,included_neighbor_ids,proposal_size,crop_x,crop_y,near_black_pct,full_target_and_neighbor_ids,clipped_target_or_neighbor_ids,rgb_file,status
+2026-09-10-16-10-51.jpg,train,166|167|168|169,163,1536,3023,0,3.974,163|166|167|168|169,,ng_replacement_neighbor_context_1536_x3023_y0.png,SEPARATE_SIZE_HOLD_FOR_USER_REVIEW_NOT_1024_BASELINE

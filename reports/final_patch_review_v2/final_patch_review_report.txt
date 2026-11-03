@@ -1,0 +1,85 @@
+FINAL PATCH REVIEW V2 — QUALITY AUDIT, NO GAN TRAINING
+Project: D:\RTC\RD\GAN_Project
+Output folder: D:\RTC\RD\GAN_Project\reports\final_patch_review_v2
+Review date: 2026-11-02
+
+Scope and safeguards
+--------------------
+- Only new review artifacts were written under reports/final_patch_review_v2.
+- No GAN training was started. All KEEP entries remain review candidates and were not added to a training run.
+- Original source photos and COCO JSON were read-only. Source RGB crops were exported losslessly as RGB PNG at native pixel resolution.
+- RGB channel count is 3. No grayscale, binary-mask PNG, or mask training target was generated.
+- Contact-sheet thumbnails are scaled only for page layout; the crop files themselves remain at native 1024x1024, 1536x1536, or 2048-sized source resolution.
+
+Clean 1024 audit — all 67 inspected
+-----------------------------------
+Near-black definition: pixel max(R,G,B) < 5. “Non-black proxy” is the complement of this threshold; it is not a semantic product segmentation. Visual review was also used to distinguish product coating from the black background.
+- Initial clean crops: 67.
+- Ratio bands: 8 completely near-black; 31 at 30–<100%; 9 at 5–<30%; 19 below 5%.
+- 39 crops at or above 30% near-black were removed from the final clean list and replaced by distinct windows from the same F971 OK source image. All 39 selected replacement RGB windows measure 0.000% near-black and show the F971 dark coating/product context on visual review.
+- 28 original clean windows below the 30% trigger were retained after visual review; the product surface remains visible and no clear Scratch was apparent.
+- All four user-highlighted patches were replaced:
+  - THAN_T_D_1_2026-09-14-10-49-55_x3072_y1024.png: 48.677% near-black; replaced from same source image.
+  - THAN_T_D_1_2026-09-14-11-04-06_x4096_y1024.png: 45.116% near-black; replaced from same source image.
+  - THAN_T_D_2_2026-09-14-11-06-11_x3072_y2048.png: 100.000% near-black; replaced from same source image.
+  - THAN_T_D_6_2026-09-14-11-09-28_x4096_y1024.png: 46.805% near-black; replaced from same source image.
+- Additional all-black patches identified in the full 67 audit are listed in clean_67_patch_pixel_audit.csv and clean_final_manifest.csv; none are retained as clean training candidates.
+- One automatic replacement for clean patch 120 showed a visible copper/brown Scratch. That candidate and a second alternate were rejected. A different, smooth surface crop (x=640,y=1024) was selected instead; see clean_candidate_rejections.csv and clean_after_filtering_67.png.
+- The selected final clean review set contains 67 candidates: 41 train, 9 validation, 17 test. Final ratios and material-proxy measurements for every patch are in clean_final_manifest.csv.
+
+31 pending Scratch crops
+------------------------
+- Contact sheet displays each patch, source image, annotation ID(s), and split with full polygon outlines in yellow.
+- Visual dispositions: 28 KEEP; 3 HOLD; 0 REJECT.
+- KEEP patch IDs: 1, 2, 3, 4, 15, 21, 22, 24, 32, 35, 36, 37, 40, 42, 44, 50, 52, 53, 54, 55, 56, 58, 59, 60, 61, 62, 63, 64.
+- HOLD patch IDs: 25, 29, 43.
+- HOLD reasons: P25 is a small irregular discoloration with ambiguous Scratch shape; P29 is tiny/low contrast against texture; P43 reaches the original frame boundary and its full extent cannot be confirmed.
+- KEEP means visually suitable as a candidate only. No patch was put into training.
+
+Sixteen edge-neighbor crops
+---------------------------
+- Polygon overlays: full polygons yellow; clipped polygons red; underlying tiles remain RGB.
+- Patch 7 was recropped at source x=2988,y=352 to restore originally clipped annotation 24. The trial still clips neighboring annotations 11, 25, 26 (28 full, 3 clipped intersecting polygons), so it is also excluded from the strict baseline.
+- All 16 edge crops are marked DROP_FROM_STRICT_1024_BASELINE: 5, 6, 7, 8, 9, 10, 11, 13, 16, 17, 18, 20, 30, 46, 47, 48. The patch-7 recrop is retained only as review evidence, not as an approved training candidate.
+- Their original COCO annotations remain unchanged.
+
+Highlighted NG crop
+-------------------
+- Original 2026-09-10-16-10-51_crop001_x3482_y777.png: 33.396% near-black; its RGB contact sheet shows substantial outside-product background.
+- A 1024 source crop at x=3385,y=72 has 0.000% near-black and contains target annotation IDs 166|167|168|169, but clips neighboring annotation 163. It is HOLD and excluded from the strict 1024 candidates.
+- A separate 1536 source-RGB proposal at x=3023,y=0 is provided for review. It includes target IDs 166|167|168|169 and nearby ID 163 where present; it is not mixed into the 1024 baseline. Full/clipped ID details are in ng_1536_neighbor_context_proposal.csv.
+
+Eight oversized COCO annotations
+--------------------------------
+- All eight COCO annotations are retained. Each has a source-native RGB 1536x1536 proposal, separate from the 1024 experiment.
+- Annotation IDs: 158, 159, 191, 202, 204, 230, 241, 245.
+- Proposal coordinates, source split, black ratio, and context margins are in oversize_annotation_crop_proposals.csv. Every target polygon is fully inside its 1536 crop.
+
+Provisional 1024 candidate counts by source split
+-------------------------------------------------
+These counts summarize QA-approved candidates only; they are not a training manifest. They exclude all 16 clipped edge crops, 3 HOLD patches from the 31 batch, and the highlighted NG patch 45 because its 1024 recrop clips a neighbor.
+  - train: 31 defect + 41 clean = 72 candidate patches
+  - validation: 8 defect + 9 clean = 17 candidate patches
+  - test: 8 defect + 17 clean = 25 candidate patches
+  - TOTAL: 47 defect + 67 clean = 114 review-approved candidates.
+- Source-level leakage check: PASS; each source image maps to one split and replacements inherit that source split.
+- No training started; user visual approval is still required before Defect-GAN training.
+
+COCO and file-integrity checks
+------------------------------
+- Normalized COCO read-only check: 49 images, 245 annotations, 0 dangling annotation references, duplicate image IDs=False.
+- Candidate crops are pixel-exact source windows: 49/49 checks passed; see rgb_pixel_provenance_check.csv.
+- Every PNG candidate and preview is RGB; no binary mask files were generated.
+- Source-level split assignment was checked before crops; no source crosses train/validation/test.
+
+Files for review
+----------------
+- contact_sheets/scratch_31_review_with_dispositions.png
+- contact_sheets/clean_after_filtering_67.png
+- contact_sheets/edge_16_final_dispositions.png
+- contact_sheets/edge_patch7_replacement_polygon_preview.png
+- contact_sheets/ng_patch_replacement_candidates.png
+- contact_sheets/ng_neighbor_context_1536_polygon_preview.png
+- contact_sheets/oversize_8_crop_proposals.png
+- clean_67_patch_pixel_audit.csv, clean_final_manifest.csv, scratch_31_dispositions.csv,
+  edge_patch_dispositions.csv, oversize_annotation_crop_proposals.csv, and final_patch_counts_by_split.csv

@@ -1,0 +1,10 @@
+{
+  "clean_patches_audited": 67,
+  "pending_scratch_patches_contacted": 31,
+  "edge_patches_audited": 16,
+  "oversize_annotations_retained": 8,
+  "source_level_split_leakage": false,
+  "training_started": false,
+  "all_saved_rgb_candidates_are_png": true,
+  "near_black_definition": "RGB max channel < 5"
+}

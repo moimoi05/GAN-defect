@@ -1,0 +1,52 @@
+# ==============================================================================
+# Git Ignore Rules for Defect-GAN Project
+# ==============================================================================
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+
+# Testing & quality assurance caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment files & Local IDE configurations
+.env
+.venv/
+venv/
+ENV/
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Operating System files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Model checkpoints, saved weights, and runtime training outputs
+outputs/
+*.pth
+*.pt
+*.onnx
+*.bin
+
+# Large archive files (> 100MB blocked by GitHub)
+*.zip
+*.tar
+*.tar.gz
+*.7z
+
+# Raw industrial datasets & experiment crops
+# (Datasets are mounted separately at runtime via Docker volumes or shared storage)
+F971/
+S942/
+experiments/
+
+# Review images and candidate patch crops in reports
+reports/**/*.png
+reports/**/*.jpg

@@ -1,0 +1,9 @@
+﻿source_image_id,source_image,annotation_id,bbox_width_px,bbox_height_px,patch_size,reason
+11,2026-09-11-23-11-04.jpg,158,1217.0,216.3,1024,bbox_exceeds_patch
+12,2026-09-12-15-02-52.jpg,159,1237.0,168.0,1024,bbox_exceeds_patch
+23,2026-09-12-09-53-25.jpg,191,1197.01,173.0,1024,bbox_exceeds_patch
+27,2026-09-11-23-10-58.jpg,202,1265.0,92.0,1024,bbox_exceeds_patch
+29,2026-09-11-22-56-25.jpg,204,1175.0,126.0,1024,bbox_exceeds_patch
+40,2026-09-09-14-29-04.jpg,230,1290.0,153.0,1024,bbox_exceeds_patch
+45,2026-09-09-14-20-26.jpg,241,1385.0,172.0,1024,bbox_exceeds_patch
+49,2026-09-12-09-53-20.jpg,245,1281.0,105.0,1024,bbox_exceeds_patch

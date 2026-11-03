@@ -1,0 +1,17 @@
+THỐNG KÊ KÍCH THƯỚC SCRATCH TRƯỚC KHI CROP
+Số ảnh NG có annotation: 49
+Số annotation: 245
+Chiều dài/chiều rộng được ước lượng bằng cạnh dài/cạnh ngắn của bbox axis-aligned; bbox gốc vẫn nằm trong CSV.
+Scratch length bbox (px): min=8.00, p25=60.04, median=156.35, p75=333.00, p90=608.18, p95=830.00, max=1385.00
+Scratch width bbox (px): min=1.00, p25=35.92, median=71.22, p75=142.52, p90=208.70, p95=269.00, max=407.00
+Polygon area (px^2): min=8.00, median=11200.63, p90=127890.00, p95=176530.00, max=337810.00
+- Chiều dài bbox 0-31 px: 19 annotation
+- Chiều dài bbox 32-63 px: 46 annotation
+- Chiều dài bbox 64-127 px: 48 annotation
+- Chiều dài bbox 128-255 px: 59 annotation
+- Chiều dài bbox 256-511 px: 37 annotation
+- Chiều dài bbox 512-1023 px: 28 annotation
+- Chiều dài bbox >=1024 px: 8 annotation
+BBox không thể vừa patch 512x512 theo kích thước gốc: 36 annotations trước khi xét vùng lân cận.
+BBox không thể vừa patch 1024x1024 theo kích thước gốc: 8 annotations trước khi xét vùng lân cận.
+Seed chia ảnh nguồn: 20261102; tỷ lệ train/validation/test: 70%/15%/15%.

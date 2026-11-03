@@ -1,0 +1,3 @@
+﻿patch_id,candidate_rgb_png,crop_x,crop_y,reason
+120,clean_replacement_patch120_x3968_y512.png,3968,512,Visible copper/brown Scratch on product; reject as clean.
+120,clean_replacement_patch120_alt2_x3712_y512.png,3712,512,Visible copper/brown Scratch reaches upper edge; reject as clean.

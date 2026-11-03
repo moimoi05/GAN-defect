@@ -1,0 +1,83 @@
+version: "3.8"
+
+services:
+  # ============================================================================
+  # GPU Training Service (Target Machine with NVIDIA GPU)
+  # ============================================================================
+  defectgan:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: defectgan:latest
+    container_name: defectgan-gpu-training
+    
+    # Enable NVIDIA GPU access inside container
+    # Prerequisite: NVIDIA Container Toolkit installed on host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    volumes:
+      # Mount dataset read-only to guarantee dataset integrity
+      - ${DATA_DIR:-.}:/workspace/data:ro
+      # Mount outputs to persist checkpoints, samples, and training logs
+      - ${OUTPUT_DIR:-./outputs}:/workspace/outputs
+
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-all}
+      - DATA_DIR=/workspace/data
+      - OUTPUT_DIR=/workspace/outputs
+      - PYTHONUNBUFFERED=1
+
+    # High shared memory to prevent PyTorch DataLoader IPC deadlocks
+    shm_size: "8g"
+    ipc: host
+
+    # Default command: launch 1024 baseline training
+    command: ["train", "--config", "configs/defectgan_1024.yaml"]
+
+  # ============================================================================
+  # CPU Smoke Test Service (Hardware-agnostic verification)
+  # ============================================================================
+  smoke-test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: defectgan:latest
+    container_name: defectgan-cpu-smoke-test
+
+    volumes:
+      - ${DATA_DIR:-.}:/workspace/data:ro
+      - ${OUTPUT_DIR:-./outputs}:/workspace/outputs
+
+    environment:
+      - DATA_DIR=/workspace/data
+      - OUTPUT_DIR=/workspace/outputs
+      - PYTHONUNBUFFERED=1
+
+    command: ["smoke-test"]
+
+  # ============================================================================
+  # Environment Inspection Service
+  # ============================================================================
+  check-env:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: defectgan:latest
+    container_name: defectgan-env-check
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    command: ["check-env"]
