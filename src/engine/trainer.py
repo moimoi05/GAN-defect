@@ -43,8 +43,10 @@ class DefectGANTrainer:
         self.output_dir = Path(output_dir)
         self.checkpoint_dir = self.output_dir / 'checkpoints'
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        self.evaluator = DefectGANEvaluator(model, criterion, val_loader, device, self.output_dir)
         cfg = config.get('training', {})
+        self.use_amp, self.amp_dtype, self.use_scaler = resolve_precision(cfg.get('mixed_precision', 'auto'), device)
+        self.evaluator = DefectGANEvaluator(model, criterion, val_loader, device, self.output_dir,
+                                            use_amp=self.use_amp, amp_dtype=self.amp_dtype)
         opt = cfg.get('optimizer', {})
         self.g_params = unique_parameters(model.G_n2d, model.G_d2n)
         self.d_params = unique_parameters(model.D_defect, model.D_normal)
@@ -55,7 +57,6 @@ class DefectGANTrainer:
         self.n_critic = int(cfg.get('n_critic', 5 if getattr(criterion, 'paper_baseline', False) else 1))
         if min(self.grad_accum_steps, self.n_critic) < 1:
             raise ValueError('accumulation steps and n_critic must be positive')
-        self.use_amp, self.amp_dtype, self.use_scaler = resolve_precision(cfg.get('mixed_precision', 'auto'), device)
         # torch.cuda.amp is available in the selected Docker PyTorch 2.1.2.
         self.scaler_g = torch.cuda.amp.GradScaler(enabled=self.use_scaler)
         self.scaler_d = torch.cuda.amp.GradScaler(enabled=self.use_scaler)
@@ -67,6 +68,7 @@ class DefectGANTrainer:
         self.sched_g = torch.optim.lr_scheduler.LambdaLR(self.opt_g, factor) if scfg.get('type') == 'linear_decay' else None
         self.sched_d = torch.optim.lr_scheduler.LambdaLR(self.opt_d, factor) if self.sched_g else None
         self.current_epoch = self.global_step = self.generator_updates = self.discriminator_updates = 0
+        self.generator_skipped_steps = self.discriminator_skipped_steps = 0
         self.best_val_loss = float('inf')
         self.at_epoch_boundary = True
         self.opt_g.zero_grad(set_to_none=True)
@@ -90,17 +92,35 @@ class DefectGANTrainer:
         scaler.unscale_(opt)
         if not any(p.grad is not None for p in params):
             raise RuntimeError('Optimizer has no gradients')
-        if any(p.grad is not None and not torch.isfinite(p.grad).all() for p in params):
+        has_non_finite = any(p.grad is not None and not torch.isfinite(p.grad).all() for p in params)
+        if not scaler.is_enabled() and has_non_finite:
             raise ValueError('Non-finite gradients; optimizer update refused')
         clip = self.config.get('training', {}).get('gradient_clip_norm')
         norm = torch.nn.utils.clip_grad_norm_(params, float(clip) if clip else float('inf'))
+        scale_before = scaler.get_scale() if scaler.is_enabled() else 1.0
         scaler.step(opt)
         scaler.update()
+        scale_after = scaler.get_scale() if scaler.is_enabled() else 1.0
         opt.zero_grad(set_to_none=True)
-        if generator:
-            self.generator_updates += 1
+        skipped = scaler.is_enabled() and (has_non_finite or scale_after < scale_before)
+        if skipped:
+            if generator:
+                self.generator_skipped_steps += 1
+            else:
+                self.discriminator_skipped_steps += 1
+            logger.warning(
+                "FP16 overflow detected: %s optimizer step skipped by GradScaler "
+                "(scale: %s -> %s, total skipped: %d)",
+                "generator" if generator else "discriminator",
+                scale_before,
+                scale_after,
+                self.generator_skipped_steps if generator else self.discriminator_skipped_steps,
+            )
         else:
-            self.discriminator_updates += 1
+            if generator:
+                self.generator_updates += 1
+            else:
+                self.discriminator_updates += 1
         return float(norm)
 
     def train_step(self, normal, defect, step_in_epoch, *, group_size=None, group_end=None, update_generator=True):
@@ -173,6 +193,10 @@ class DefectGANTrainer:
         state = dict(checkpoint_schema=2, epoch=self.current_epoch-1 if safe else self.current_epoch, next_epoch=self.current_epoch,
                      safe_to_resume=safe, resume_policy='epoch_boundary_only', global_step=self.global_step,
                      generator_updates=self.generator_updates, discriminator_updates=self.discriminator_updates,
+                     generator_skipped_steps=self.generator_skipped_steps,
+                     discriminator_skipped_steps=self.discriminator_skipped_steps,
+                     scaler_g_scale=self.scaler_g.get_scale() if self.use_scaler else 1.0,
+                     scaler_d_scale=self.scaler_d.get_scale() if self.use_scaler else 1.0,
                      model_state=self.model.state_dict(), opt_g_state=self.opt_g.state_dict(), opt_d_state=self.opt_d.state_dict(),
                      scaler_g_state=self.scaler_g.state_dict(), scaler_d_state=self.scaler_d.state_dict(),
                      sched_g_state=self.sched_g.state_dict() if self.sched_g else None,
@@ -214,6 +238,8 @@ class DefectGANTrainer:
         self.current_epoch = checkpoint['next_epoch']
         for name in ('global_step','generator_updates','discriminator_updates','best_val_loss'):
             setattr(self,name,checkpoint[name])
+        self.generator_skipped_steps = checkpoint.get('generator_skipped_steps', 0)
+        self.discriminator_skipped_steps = checkpoint.get('discriminator_skipped_steps', 0)
         rng = checkpoint['rng_state']
         random.setstate(rng['python'])
         np.random.set_state(rng['numpy'])
@@ -257,7 +283,15 @@ class DefectGANTrainer:
                         self.global_step += 1
                         logger.info('epoch=%d microbatch=%d d_updates=%d d_losses=%s',
                                     epoch, processed+index, self.discriminator_updates, logs)
-                    if self.discriminator_updates % self.n_critic == 0:
+                    # 5D:1G schedule policy based on actual successful updates:
+                    # G is updated only when the number of successful D updates satisfies:
+                    # self.discriminator_updates >= (self.generator_updates + 1) * self.n_critic
+                    # This guarantees:
+                    # 1. Exact n_critic successful D updates precede each G update.
+                    # 2. If D skips due to FP16 overflow, G waits until D achieves the required successful updates.
+                    # 3. If G skips due to FP16 overflow, G retries on the next group once D succeeds, keeping pace.
+                    # 4. G never updates before D has performed at least n_critic successful updates.
+                    if self.discriminator_updates > 0 and self.discriminator_updates >= (self.generator_updates + 1) * self.n_critic:
                         for index, batch in enumerate(group):
                             glogs = self._generator_step(batch['normal'].to(self.device), batch['defect'].to(self.device),
                                                          size, index == size-1)
@@ -278,27 +312,46 @@ class DefectGANTrainer:
                 for sched in (self.sched_g,self.sched_d):
                     if sched:
                         sched.step()
-            is_best=False
-            if self.val_loader and ((epoch+1)%cfg.get('validation_interval',1)==0 or dry_run):
-                metrics=self.evaluator.evaluate(epoch,save_samples=(epoch+1)%cfg.get('sample_interval',5)==0 or dry_run)
-                score=metrics['val_cyc_normal']+metrics['val_cyc_defect']
-                if not np.isfinite(score):
-                    raise ValueError('Non-finite validation metric')
-                is_best=score<self.best_val_loss
-                if is_best:
-                    self.best_val_loss=score
-            if completed_epoch:
-                path=self.checkpoint_dir/'latest.pth'
-                if (epoch+1)%cfg.get('checkpoint_interval',10)==0:
-                    path=self.checkpoint_dir/f'checkpoint_epoch_{epoch:04d}.pth'
+                # Advance epoch counter and safely persist completed epoch state first.
+                # This guarantees validation failures or OOM cannot corrupt or erase trained weights.
                 self.current_epoch = epoch + 1
-                self.save_checkpoint(path,is_best=is_best)
+                path = self.checkpoint_dir / 'latest.pth'
+                if (epoch + 1) % cfg.get('checkpoint_interval', 10) == 0:
+                    path = self.checkpoint_dir / f'checkpoint_epoch_{epoch:04d}.pth'
+                self.save_checkpoint(path, is_best=False)
             else:
-                self.save_checkpoint(self.checkpoint_dir/'dry_run_partial_unsafe.pth',safe_to_resume=False)
+                self.save_checkpoint(self.checkpoint_dir / 'dry_run_partial_unsafe.pth', safe_to_resume=False)
+
+            is_best = False
+            if self.val_loader and ((epoch + 1) % cfg.get('validation_interval', 1) == 0 or dry_run):
+                try:
+                    metrics = self.evaluator.evaluate(epoch, save_samples=(epoch + 1) % cfg.get('sample_interval', 5) == 0 or dry_run)
+                    score = metrics['val_cyc_normal'] + metrics['val_cyc_defect']
+                    if not np.isfinite(score):
+                        raise ValueError(f'Non-finite validation metric: {score}')
+                    is_best = score < self.best_val_loss
+                    if is_best:
+                        self.best_val_loss = score
+                        # Only record best checkpoint after successful validation and improved metric
+                        self.save_checkpoint(self.checkpoint_dir / 'best.pth', is_best=True)
+                except Exception as exc:
+                    logger.error(
+                        "Validation failed at epoch %d (%s: %s). "
+                        "Epoch training checkpoint is safely preserved at %s.",
+                        epoch, type(exc).__name__, exc, path if completed_epoch else 'unsafe', exc_info=True
+                    )
+                    if self.device.type == 'cuda':
+                        torch.cuda.empty_cache()
+                    raise
         if dry_run:
             changed=[any(not torch.equal(a,b) for a,b in zip(before,params)) for before,params in zip(snapshots,(self.g_params,self.d_params))]
-            evidence=dict(generator_changed=changed[0],discriminator_changed=changed[1],generator_updates=self.generator_updates,
-                          discriminator_updates=self.discriminator_updates,finite_losses=all(np.isfinite(v) for v in logs.values()),
+            evidence=dict(generator_changed=changed[0],discriminator_changed=changed[1],
+                          generator_updates=self.generator_updates,discriminator_updates=self.discriminator_updates,
+                          generator_skipped_steps=self.generator_skipped_steps,
+                          discriminator_skipped_steps=self.discriminator_skipped_steps,
+                          scaler_g_scale=self.scaler_g.get_scale() if self.use_scaler else 1.0,
+                          scaler_d_scale=self.scaler_d.get_scale() if self.use_scaler else 1.0,
+                          finite_losses=all(np.isfinite(v) for v in logs.values()),
                           checkpoint_schema=2,resume_policy='epoch_boundary_only',
                           completed_epoch=epoch if completed_epoch else None,next_epoch=self.current_epoch,
                           safe_to_resume=completed_epoch,

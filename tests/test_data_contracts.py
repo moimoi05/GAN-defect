@@ -138,3 +138,40 @@ def test_explicit_manifest_generation_writes_only_separate_output(tmp_path):
     assert len(list((tmp_path/'generated').glob('*.csv')))==3
     assert before=={p.name:hashlib.sha256(p.read_bytes()).hexdigest()
                    for p in (DATA_ROOT/'training/manifests').glob('*.csv')}
+
+
+def test_manifest_consistency_mismatch_fails_closed(tmp_path):
+    """Manifest consistency check: differing copies between image and DATA_DIR fail-closed."""
+    from src.datasets.f971_dataset import verify_manifest_consistency
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    rel = Path("training/manifests/val.csv")
+    (data_dir / rel).parent.mkdir(parents=True)
+    (tmp_path / rel).parent.mkdir(parents=True)
+    # Write inconsistent contents
+    (data_dir / rel).write_text("patch_path,domain,split\npatches/clean.png,clean,validation\n")
+    (tmp_path / rel).write_text("patch_path,domain,split\npatches/other.png,clean,validation\n")
+
+    with pytest.raises(ValueError, match="Manifest consistency check FAILED"):
+        verify_manifest_consistency(rel, data_root=data_dir)
+
+
+def test_manifest_consistency_matching_passes(tmp_path):
+    """Manifest consistency check: identical copies across candidates resolve successfully."""
+    from src.datasets.f971_dataset import verify_manifest_consistency
+    # Test using actual repository manifests across project and data_root
+    resolved = verify_manifest_consistency("training/manifests/val.csv", data_root=ROOT)
+    assert resolved.exists()
+    assert resolved.name == "val.csv"
+
+    # Test custom separate directory with consistent copies
+    sub1 = tmp_path / "img_dir"
+    sub2 = tmp_path / "data_dir"
+    sub1.mkdir()
+    sub2.mkdir()
+    content = "patch_path,domain,split\npatches/clean.png,clean,validation\n"
+    (sub1 / "test_val.csv").write_text(content)
+    (sub2 / "test_val.csv").write_text(content)
+    resolved2 = verify_manifest_consistency(sub1 / "test_val.csv", data_root=sub2)
+    assert resolved2.exists()
+    assert resolved2.read_text() == content

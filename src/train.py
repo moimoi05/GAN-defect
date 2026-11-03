@@ -13,7 +13,7 @@ import yaml
 import torch
 from torch.utils.data import DataLoader, Subset
 
-from src.datasets.f971_dataset import DefectGANDataset
+from src.datasets.f971_dataset import DefectGANDataset, verify_manifest_consistency
 from src.models.defect_gan import DefectGAN
 from src.losses.gan_losses import DefectGANLoss, PaperDefectGANLoss
 from src.engine.trainer import DefectGANTrainer
@@ -124,8 +124,14 @@ def main() -> None:
     data_root = Path(os.environ.get("DATA_DIR", data_cfg.get("data_root", ".")))
     img_size = data_cfg.get("image_size", 1024)
 
-    train_manifest = data_cfg.get("train_manifest", "training/manifests/train.csv")
-    val_manifest = data_cfg.get("val_manifest", "training/manifests/val.csv")
+    train_manifest = verify_manifest_consistency(
+        data_cfg.get("train_manifest", "training/manifests/train.csv"),
+        data_root=data_root,
+    )
+    val_manifest = verify_manifest_consistency(
+        data_cfg.get("val_manifest", "training/manifests/val.csv"),
+        data_root=data_root,
+    )
 
     train_dataset = DefectGANDataset(
         manifest_path=train_manifest,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import random
 import os
 from pathlib import Path, PureWindowsPath
@@ -13,6 +14,50 @@ import torch
 from torch.utils.data import Dataset
 
 from src.datasets.transforms import get_transforms
+
+
+def verify_manifest_consistency(
+    manifest_path: Union[str, Path],
+    data_root: Optional[Union[str, Path]] = None,
+) -> Path:
+    """Ensure consistency between image workspace manifest and data_root manifest.
+
+    If candidate manifest copies exist in both the image/workspace and DATA_DIR,
+    their contents must match byte-for-byte (checked via SHA256). Fail-closed if
+    inconsistent. Returns the verified manifest Path.
+    """
+    raw_path = Path(manifest_path)
+    data_root_path = Path(data_root or os.environ.get("DATA_DIR", ".")).resolve()
+    project_root = Path(__file__).resolve().parent.parent.parent
+
+    candidates = []
+    if raw_path.is_absolute():
+        candidates.append(raw_path)
+    else:
+        candidates.append((data_root_path / raw_path).resolve())
+        candidates.append((Path.cwd() / raw_path).resolve())
+        candidates.append((project_root / raw_path).resolve())
+
+    existing = []
+    seen = set()
+    for c in candidates:
+        if c.is_file() and str(c) not in seen:
+            existing.append(c)
+            seen.add(str(c))
+
+    if not existing:
+        raise FileNotFoundError(f"Manifest not found: {manifest_path} (searched: {candidates})")
+
+    if len(existing) > 1:
+        hashes = {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in existing}
+        unique_hashes = set(hashes.values())
+        if len(unique_hashes) > 1:
+            details = "; ".join(f"{p} (sha256={h[:16]})" for p, h in hashes.items())
+            raise ValueError(
+                f"Manifest consistency check FAILED: manifest copies differ between image workspace and DATA_DIR ({details}). Fail-closed."
+            )
+
+    return existing[0]
 
 
 def resolve_patch_path(data_root: Union[str, Path], relative_path: str) -> Path:
@@ -57,17 +102,14 @@ class DefectGANDataset(Dataset):
                        for split are used.
         """
         super().__init__()
-        self.manifest_path = Path(manifest_path)
         self.data_root = Path(data_root) if data_root else Path(os.environ.get("DATA_DIR", "."))
+        self.manifest_path = verify_manifest_consistency(manifest_path, data_root=self.data_root)
         if split not in {"train", "validation", "val", "test"}:
             raise ValueError(f"Unknown dataset split: {split}")
         split = "validation" if split == "val" else split
         self.split = split
         self.image_size = image_size
         self.transform = transform or get_transforms(split=split, image_size=image_size)
-
-        if not self.manifest_path.exists():
-            raise FileNotFoundError(f"Manifest not found: {self.manifest_path}")
 
         self.normal_items: List[Dict[str, str]] = []
         self.defect_items: List[Dict[str, str]] = []

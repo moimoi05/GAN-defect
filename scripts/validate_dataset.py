@@ -12,6 +12,7 @@ Validates:
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import sys
@@ -201,6 +202,24 @@ def validate_baseline(data_root: Path, manifest_dir: Path = None) -> dict:
     """Validate existing manifests against approved audits, strictly read-only."""
     root = Path(data_root).resolve()
     directory = Path(manifest_dir) if manifest_dir else root / "training/manifests"
+
+    # Verify manifest consistency between image workspace and DATA_DIR if both exist
+    image_manifest_dir = (PROJECT_ROOT / "training/manifests").resolve()
+    data_manifest_dir = (root / "training/manifests").resolve()
+    if manifest_dir:
+        image_manifest_dir = Path(manifest_dir).resolve()
+    if image_manifest_dir.exists() and data_manifest_dir.exists() and image_manifest_dir != data_manifest_dir:
+        for split_file in ("train.csv", "val.csv", "test.csv"):
+            f_img = image_manifest_dir / split_file
+            f_data = data_manifest_dir / split_file
+            if f_img.exists() and f_data.exists():
+                h_img = hashlib.sha256(f_img.read_bytes()).hexdigest()
+                h_data = hashlib.sha256(f_data.read_bytes()).hexdigest()
+                if h_img != h_data:
+                    raise ValueError(
+                        f"Manifest inconsistency between image copy ({f_img}: sha256={h_img[:12]}) "
+                        f"and DATA_DIR copy ({f_data}: sha256={h_data[:12]}). Fail-closed."
+                    )
     expected = approved_items(root)
     expected_keys = {tuple(str(item[k]) for k in FIELDS) for item in expected}
     if len(expected_keys) != 114:

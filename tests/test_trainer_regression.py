@@ -240,3 +240,168 @@ def test_disabled_autocast_does_not_construct_torch_context(tmp_path,monkeypatch
         pass
     with trainer._autocast(False):
         pass
+
+
+class SimulatedGradScaler:
+    """CPU-compatible mock replicating PyTorch GradScaler unscale/skip/backoff lifecycle."""
+    def __init__(self, initial_scale=65536.0, growth_factor=2.0, backoff_factor=0.5):
+        self._scale = float(initial_scale)
+        self._growth_factor = float(growth_factor)
+        self._backoff_factor = float(backoff_factor)
+        self._enabled = True
+        self._has_inf = False
+
+    def is_enabled(self):
+        return self._enabled
+
+    def get_scale(self):
+        return self._scale
+
+    def scale(self, outputs):
+        return outputs
+
+    def unscale_(self, opt):
+        for group in opt.param_groups:
+            for p in group['params']:
+                if p.grad is not None and not torch.isfinite(p.grad).all():
+                    self._has_inf = True
+
+    def step(self, opt):
+        if not self._has_inf:
+            opt.step()
+
+    def update(self):
+        if self._has_inf:
+            self._scale *= self._backoff_factor
+            self._has_inf = False
+
+    def state_dict(self):
+        return {'scale': self._scale}
+
+    def load_state_dict(self, d):
+        self._scale = d['scale']
+
+
+def test_simulated_fp16_overflow_skips_and_updates_scale(tmp_path):
+    """Simulated regression: FP16 overflow triggers GradScaler skip and scale reduction, not ValueError."""
+    trainer = make_trainer(tmp_path, 2, 1)
+    trainer.use_scaler = True
+    trainer.scaler_d = SimulatedGradScaler(initial_scale=65536.0)
+    batch = trainer.train_loader[0]
+    # Compute normal train step to populate grads
+    trainer.train_step(batch['normal'], batch['defect'], 0, group_size=1, group_end=False, update_generator=False)
+    # Inject FP16 overflow into discriminator grads
+    for p in trainer.d_params:
+        if p.grad is not None:
+            p.grad.fill_(float('inf'))
+    before_params = [p.detach().clone() for p in trainer.d_params]
+    norm = trainer._step_optimizer(generator=False)
+    # Step should be skipped: no param changes, scale halved, counters tracked
+    assert trainer.discriminator_skipped_steps == 1
+    assert trainer.discriminator_updates == 0
+    assert trainer.scaler_d.get_scale() == 32768.0
+    for before, current in zip(before_params, trainer.d_params):
+        torch.testing.assert_close(before, current)
+    assert all(p.grad is None for p in trainer.d_params)
+
+
+def test_simulated_5d_1g_schedule_with_fp16_overflow_skip(tmp_path):
+    """5D:1G schedule policy: G updates only after 5 actual SUCCESSFUL D updates, skipping over overflow."""
+    # 6 microbatches, accum=1, n_critic=5
+    trainer = make_trainer(tmp_path, 6, 1, n_critic=5)
+    trainer.use_scaler = True
+    scaler_d = SimulatedGradScaler(initial_scale=65536.0)
+    trainer.scaler_d = scaler_d
+    original_step_opt = trainer._step_optimizer
+    step_call_count = [0]
+
+    def flaky_step_optimizer(generator):
+        if not generator:
+            step_call_count[0] += 1
+            if step_call_count[0] == 3:
+                # Inject overflow at the 3rd D step
+                for p in trainer.d_params:
+                    if p.grad is not None:
+                        p.grad.fill_(float('inf'))
+        return original_step_opt(generator)
+
+    trainer._step_optimizer = flaky_step_optimizer
+    trainer.train()
+    # Total D attempts: 6. 1 skipped, 5 successful.
+    assert trainer.discriminator_skipped_steps == 1
+    assert trainer.discriminator_updates == 5
+    # G ran exactly once when D achieved 5 successful updates (at microbatch 6, not 5)
+    assert trainer.generator_updates == 1
+
+
+def test_scaler_disabled_non_finite_gradients_raise_error(tmp_path):
+    """When scaler is disabled (FP32/none), non-finite gradients must fail-closed with ValueError."""
+    trainer = make_trainer(tmp_path, 1, 1)
+    trainer.use_scaler = False
+    assert not trainer.scaler_d.is_enabled()
+    batch = trainer.train_loader[0]
+    trainer.train_step(batch['normal'], batch['defect'], 0, group_size=1, group_end=False, update_generator=False)
+    for p in trainer.d_params:
+        if p.grad is not None:
+            p.grad.fill_(float('nan'))
+    with pytest.raises(ValueError, match="Non-finite gradients"):
+        trainer._step_optimizer(generator=False)
+
+
+def test_validation_failure_preserves_completed_epoch_checkpoint(tmp_path):
+    """Validation failure/OOM must preserve the completed epoch's checkpoint and not write best.pth."""
+    trainer = make_trainer(tmp_path, 1, 1)
+    trainer.config['training']['validation_interval'] = 1
+    trainer.val_loader = [{}]
+    def fail_eval(*a, **k):
+        raise RuntimeError("Simulated validation OOM or evaluation failure")
+    trainer.evaluator.evaluate = fail_eval
+    with pytest.raises(RuntimeError, match="Simulated validation OOM"):
+        trainer.train()
+    # Completed epoch checkpoint was safely persisted BEFORE validation
+    latest = trainer.checkpoint_dir / 'latest.pth'
+    assert latest.exists(), "latest.pth must be saved before validation execution"
+    ckpt = torch.load(latest, map_location='cpu', weights_only=False)
+    assert ckpt['next_epoch'] == 1
+    assert ckpt['safe_to_resume'] is True
+    # best.pth must NOT exist since validation failed
+    assert not (trainer.checkpoint_dir / 'best.pth').exists()
+
+
+def test_evaluator_amp_policy_and_memory_reporting(tmp_path):
+    """Evaluator adheres to specified AMP policy and records diagnostics."""
+    from src.engine.evaluator import DefectGANEvaluator
+    val_loader = [{'normal': torch.ones(1, 3, 16, 16), 'defect': torch.zeros(1, 3, 16, 16)}]
+    evaluator = DefectGANEvaluator(TinyModel(), TinyLoss(), val_loader, torch.device('cpu'),
+                                  tmp_path, use_amp=False, amp_dtype=torch.float32)
+    metrics = evaluator.evaluate(0, save_samples=False)
+    assert 'val_cyc_normal' in metrics
+    eval_json = tmp_path / 'validation' / 'epoch_0000.json'
+    assert eval_json.exists()
+    import json
+    data = json.loads(eval_json.read_text(encoding='utf-8'))
+    assert data['amp_enabled'] is False
+    assert data['amp_dtype'] == 'none'
+    assert 'metrics' in data
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires real CUDA device for hardware execution")
+def test_real_cuda_amp_gradscaler_overflow(tmp_path):
+    """Real CUDA test: verifies native torch.cuda.amp.GradScaler skips on hardware overflow."""
+    device = torch.device('cuda')
+    cfg = {'training': {'epochs': 1, 'mixed_precision': 'fp16', 'gradient_accumulation_steps': 1,
+                        'n_critic': 1, 'validation_interval': 99, 'checkpoint_interval': 10}}
+    batch = {'normal': torch.ones(1, 3, 16, 16, device=device), 'defect': torch.zeros(1, 3, 16, 16, device=device)}
+    trainer = DefectGANTrainer(cfg, TinyModel(), TinyLoss(), [batch], [], device, tmp_path)
+    assert trainer.use_scaler is True
+    assert trainer.scaler_d.is_enabled()
+    scale_start = trainer.scaler_d.get_scale()
+    trainer.train_step(batch['normal'], batch['defect'], 0, group_size=1, group_end=False, update_generator=False)
+    # Inject inf into CUDA tensor grad
+    for p in trainer.d_params:
+        if p.grad is not None:
+            p.grad.fill_(float('inf'))
+    trainer._step_optimizer(generator=False)
+    assert trainer.discriminator_skipped_steps == 1
+    assert trainer.discriminator_updates == 0
+    assert trainer.scaler_d.get_scale() < scale_start

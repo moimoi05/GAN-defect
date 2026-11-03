@@ -1,20 +1,21 @@
 # Verification report
 
-Date: 2026-11-03 (Asia/Bangkok). HEAD `adccccf898bf1a14fc4235cf4df3f2a76f43b34b`. Working tree already contained substantial uncommitted changes at start of this session; see `git status --short`. Tests below are mechanical validation, not trained-model or image-quality evidence.
+Date: 2026-11-03 (Asia/Bangkok).
+Branch: `review/defectgan-gpu-smoke`
+Base reviewed commit: `5f21e9a39be12d89d5518ce16e18ca26f17b41d8` (5f21e9a: "fix: Defect-GAN paper alignment and GPU readiness").
+Working tree status: Targeted pre-GPU-smoke fixes applied to 7 files in working tree (not committed/pushed per user instruction). Tests below provide mechanical software pipeline validation, strictly distinguishing CPU logic verification from hardware GPU execution.
 
 ## Results
 
 | Test / objective | Conditions / command | Result and evidence |
 |---|---|---|
-| Host full regression and coverage | Windows, Python 3.11.9, torch 2.9.1+cpu; `OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 py -3.11 -m pytest -q --cov=src --cov-report=term --junitxml=outputs/audit/final_pytest.xml` (PowerShell environment variables) | **PASS**, exit 0, 103 passed, total statement coverage 83%; per-file limits and 40 deprecation warnings in `outputs/audit/final_pytest.log`. Named cases and durations in `outputs/audit/final_pytest.xml`. Coverage is not proof of correctness; `src/train.py` 27%, inference 74%. |
-| Container build | Docker Desktop Linux x86_64, `docker build -t defectgan:codex-retest .` | **PASS**, exit 0; `outputs/docker_codex_retest_build.log`. Container Python 3.10.13, torch 2.1.2/CUDA runtime 12.1, NumPy 1.26.4, Pillow 10.4.0, PyYAML 6.0.2: `outputs/docker_versions.log` (same pinned base/dependencies). |
-| Dataset validator | Docker image, complete dataset read-only mounted `/workspace/data`; `validate-data` | **PASS**, exit 0; `outputs/docker_validation.log`: 114 RGB PNG 1024, 39 replacements, no excluded patches, 92 distinct sources, no cross-split source leakage. Split train 31 NG/41 OK, validation 8/9, test 8/17. |
-| Container pytest | Rebuilt image, dataset read-only; `pytest -q` | **PASS**, exit 0; 103 passed in 44.65s, `outputs/docker_pytest_retest.log`. Individual named cases are listed there. |
-| Container CPU smoke | Rebuilt image, dataset read-only and writable output; `smoke-test` | **PASS**, exit 0; all five stages and per-stage exit codes in `outputs/docker_smoke_retest.log`. Reduced 32px model, G/D updates 1/5; safe smoke-only checkpoint resume to 2/10; finite losses, synthetic RGB output. This is not native 1024 performance. |
-| Initial container attempts | Earlier image, same CPU smoke and pytest | **FAIL**, smoke and 17 tests: torch 2.1 CPU autocast rejected unsupported dtype even when disabled. Logs `outputs/docker_smoke.log`, `outputs/docker_pytest.log`. Fixed with `nullcontext`, regression added; rebuilt retest results above. |
-| Dataset integrity | SHA-256 compare 729 paths to pre-existing `outputs/audit/protected_sha256_before.json` after tests | **PASS**, no changed/missing paths, `outputs/audit/current_integrity.json`. Comparison is relative to the recorded inventory, not proof of provenance before it was created. |
-| GPU smoke / AMP / 1024 peak VRAM | NVIDIA GPU unavailable locally; company GPU unspecified | **NOT_RUN**. No CUDA optimizer, FP16/BF16 hardware execution, peak VRAM or real S942 image benchmark. |
-| Full GAN training, quality/transfer validation | Explicitly outside this task | **NOT_RUN**. No claim of model training success, scratch realism or S942 transfer. |
+| Host full regression | Windows, Python 3.11.9, torch 2.9.1+cpu; `py -3.11 -m pytest -v` | **PASS**, exit 0, 110 passed, 1 skipped (CUDA hardware test skipped as expected on CPU). All 7 new regression tests passed. |
+| Container build | Docker Desktop Linux x86_64, `docker build -t defectgan:review-smoke .` | **PASS**, exit 0. Pinned official base `pytorch/pytorch:2.1.2-cuda12.1-cudnn8-runtime`. |
+| Manifest consistency & Dataset validator | Docker container, read-only mount `/workspace/data`; `validate-data` | **PASS**, exit 0. Manifest SHA-256 consistency verified between image and DATA_DIR. 114 RGB PNG 1024, 39 replacements, 0 excluded patches, 92 unique sources, 0 cross-split leakage. |
+| Container pytest | Docker container `defectgan:review-smoke pytest -v` | **PASS**, exit 0, 110 passed, 1 skipped in 51.99s. All data contract, component, pipeline, and trainer regression tests green. |
+| Container CPU bounded smoke | Docker container `defectgan:review-smoke smoke-test` | **PASS**, exit 0, all 5 stages passed: Stage 1 Dataset PASS, Stage 2 Components PASS, Stage 3 Trainer Dry-Run PASS (D=5, G=1 updates), Stage 4 Safe Resume PASS (advanced to D=10, G=2 updates), Stage 5 Inference PASS (lossless RGB PNG). |
+| Real GPU smoke / CUDA AMP / Peak VRAM | Local machine lacks NVIDIA GPU; company GPU environment pending | **NOT_RUN / PENDING GPU HANDOVER**. No claim of GPU PASS or VRAM confirmation. Hardware execution must be verified during GPU smoke step. |
+| Full GAN training & quality transfer | Explicitly outside targeted fix scope | **NOT_RUN**. No full training run performed. |
 
 The default host Python 3.12 lacks torch, so use `py -3.11` for host commands. The torch 2.9 host warns that `torch.cuda.amp.GradScaler` is deprecated; this API was selected for the pinned 2.1.2 image. GPU hardware compatibility remains unverified. Validation critic loss omits GP; checkpoint selection uses reconstruction proxy and does not measure scratch realism. Safe smoke checkpoints are isolated from full-loader training. The project-specific 1024 configuration and original paper differences are documented in `paper_alignment_review.md`.
 
