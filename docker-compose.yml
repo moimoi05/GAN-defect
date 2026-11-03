@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   # ============================================================================
   # GPU Training Service (Target Machine with NVIDIA GPU)
@@ -10,6 +8,7 @@ services:
       dockerfile: Dockerfile
     image: defectgan:latest
     container_name: defectgan-gpu-training
+    profiles: ["train"]
     
     # Enable NVIDIA GPU access inside container
     # Prerequisite: NVIDIA Container Toolkit installed on host
@@ -28,8 +27,7 @@ services:
       - ${OUTPUT_DIR:-./outputs}:/workspace/outputs
 
     environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-all}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
       - DATA_DIR=/workspace/data
       - OUTPUT_DIR=/workspace/outputs
       - PYTHONUNBUFFERED=1
@@ -50,6 +48,7 @@ services:
       dockerfile: Dockerfile
     image: defectgan:latest
     container_name: defectgan-cpu-smoke-test
+    profiles: ["smoke"]
 
     volumes:
       - ${DATA_DIR:-.}:/workspace/data:ro
@@ -71,6 +70,7 @@ services:
       dockerfile: Dockerfile
     image: defectgan:latest
     container_name: defectgan-env-check
+    profiles: ["diagnostics"]
 
     deploy:
       resources:

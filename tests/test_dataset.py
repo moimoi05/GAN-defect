@@ -1,6 +1,7 @@
 """Unit tests for Defect-GAN dataset, manifests, and transforms."""
 
 import csv
+import os
 from pathlib import Path
 import pytest
 import torch
@@ -10,6 +11,7 @@ from src.datasets.transforms import get_transforms
 from src.utils import denormalize, tensor_to_rgb_numpy
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DATA_ROOT = Path(os.environ.get("DATA_DIR", PROJECT_ROOT))
 
 
 def test_manifest_existence_and_counts():
@@ -63,7 +65,7 @@ def test_dataset_loading_item():
     train_manifest = PROJECT_ROOT / "training/manifests/train.csv"
     dataset = DefectGANDataset(
         manifest_path=train_manifest,
-        data_root=PROJECT_ROOT,
+        data_root=DATA_ROOT,
         split="train",
         image_size=128,  # Small size for fast test
     )

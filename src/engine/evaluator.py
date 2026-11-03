@@ -1,94 +1,77 @@
-"""Evaluator module for Defect-GAN validation and image sampling."""
-
+"""Validation diagnostics; reconstruction metrics do not measure scratch realism."""
 from __future__ import annotations
-
+import json
 from pathlib import Path
-from typing import Dict, Optional
-
 import torch
-from torch.utils.data import DataLoader
-
-from src.models.defect_gan import DefectGAN
-from src.losses.gan_losses import DefectGANLoss
-from src.utils import save_rgb_image, denormalize
+from src.utils import save_rgb_image
 
 
 class DefectGANEvaluator:
-    """Evaluates Defect-GAN during validation and saves RGB sample visualizations."""
-
-    def __init__(
-        self,
-        model: DefectGAN,
-        criterion: DefectGANLoss,
-        val_loader: DataLoader,
-        device: torch.device,
-        output_dir: Path,
-    ) -> None:
-        self.model = model
-        self.criterion = criterion
-        self.val_loader = val_loader
-        self.device = device
-        self.output_dir = Path(output_dir)
-        self.samples_dir = self.output_dir / "samples"
-        self.samples_dir.mkdir(parents=True, exist_ok=True)
+    def __init__(self, model, criterion, val_loader, device, output_dir):
+        self.model, self.criterion, self.val_loader = model, criterion, val_loader
+        self.device, self.output_dir = device, Path(output_dir)
+        self.samples_dir = self.output_dir/'samples'
+        self.samples_dir.mkdir(parents=True,exist_ok=True)
 
     @torch.no_grad()
-    def evaluate(self, epoch: int, save_samples: bool = True) -> Dict[str, float]:
-        """Run validation loop over val_loader and optionally save preview RGB samples."""
+    def evaluate(self, epoch, save_samples=True):
+        previous = self.model.training
         self.model.eval()
-
-        val_metrics: Dict[str, float] = {
-            "val_cyc_normal": 0.0,
-            "val_cyc_defect": 0.0,
-            "val_mask_defect_mean": 0.0,
-            "val_mask_normal_mean": 0.0,
-        }
-        total_batches = 0
-
-        for batch_idx, batch in enumerate(self.val_loader):
-            normal = batch["normal"].to(self.device)
-            defect = batch["defect"].to(self.device)
-            b_size = normal.size(0)
-
-            c = torch.ones(b_size, self.model.num_classes, device=self.device)
-
-            # Cycle translations
-            fake_defect = self.model.defacement(normal, c)
-            recon_normal = self.model.restoration(fake_defect["output"], c)
-
-            fake_normal = self.model.restoration(defect, c)
-            recon_defect = self.model.defacement(fake_normal["output"], c)
-
-            # Background preservation & cycle metrics
-            l1_norm = torch.mean(torch.abs(recon_normal["output"] - normal)).item()
-            l1_def = torch.mean(torch.abs(recon_defect["output"] - defect)).item()
-            mask_def_mean = torch.mean(fake_defect["mask"]).item()
-            mask_norm_mean = torch.mean(fake_normal["mask"]).item()
-
-            val_metrics["val_cyc_normal"] += l1_norm
-            val_metrics["val_cyc_defect"] += l1_def
-            val_metrics["val_mask_defect_mean"] += mask_def_mean
-            val_metrics["val_mask_normal_mean"] += mask_norm_mean
-            total_batches += 1
-
-            # Save visual samples for the first batch
-            if save_samples and batch_idx == 0:
-                epoch_sample_dir = self.samples_dir / f"epoch_{epoch:04d}"
-                epoch_sample_dir.mkdir(parents=True, exist_ok=True)
-
-                for i in range(min(b_size, 4)):
-                    save_rgb_image(normal[i], epoch_sample_dir / f"sample_{i}_01_normal_input.png")
-                    save_rgb_image(fake_defect["output"][i], epoch_sample_dir / f"sample_{i}_02_fake_defect.png")
-                    save_rgb_image(fake_defect["mask"][i], epoch_sample_dir / f"sample_{i}_03_defect_mask.png")
-                    save_rgb_image(recon_normal["output"][i], epoch_sample_dir / f"sample_{i}_04_recon_normal.png")
-
-                    save_rgb_image(defect[i], epoch_sample_dir / f"sample_{i}_05_defect_input.png")
-                    save_rgb_image(fake_normal["output"][i], epoch_sample_dir / f"sample_{i}_06_fake_normal.png")
-                    save_rgb_image(recon_defect["output"][i], epoch_sample_dir / f"sample_{i}_07_recon_defect.png")
-
-        # Average metrics
-        if total_batches > 0:
-            for k in val_metrics:
-                val_metrics[k] /= total_batches
-
-        return val_metrics
+        totals, count = {}, 0
+        try:
+            for index,batch in enumerate(self.val_loader):
+                normal, defect = batch['normal'].to(self.device), batch['defect'].to(self.device)
+                c = torch.ones(normal.size(0),self.model.num_classes,device=self.device)
+                fake_d = self.model.defacement(normal,c)
+                fake_n = self.model.restoration(defect,c)
+                recon_n = self.model.restoration(fake_d['output'],c)
+                recon_d = self.model.defacement(fake_n['output'],c)
+                d_fake_d = self.model.discriminate_defect(fake_d['output'])
+                d_fake_n = self.model.discriminate_normal(fake_n['output'])
+                identity = self.criterion.lambda_rec > 0 and not getattr(self.criterion,'paper_baseline',False)
+                _,glogs = self.criterion.compute_generator_loss(
+                    normal_img=normal,defect_img=defect,fake_defect=fake_d,fake_normal=fake_n,
+                    recon_normal=recon_n,recon_defect=recon_d,
+                    id_defect=self.model.defacement(defect,c) if identity else None,
+                    id_normal=self.model.restoration(normal,c) if identity else None,
+                    d_defect_fake=d_fake_d,d_normal_fake=d_fake_n,
+                    target_cls_defect=c,target_cls_normal=torch.zeros_like(c))
+                _,dlogs = self.criterion.compute_discriminator_loss(
+                    d_defect_real=self.model.discriminate_defect(defect),d_defect_fake=d_fake_d,
+                    d_normal_real=self.model.discriminate_normal(normal),d_normal_fake=d_fake_n,
+                    target_cls_defect=c,target_cls_normal=torch.zeros_like(c))
+                metrics = {'val_'+k:v for k,v in {**glogs,**dlogs}.items()}
+                metrics['val_d_loss_without_gp'] = metrics.pop('val_d_loss')
+                metrics.update(val_cyc_normal=(recon_n['output']-normal).abs().mean().item(),
+                               val_cyc_defect=(recon_d['output']-defect).abs().mean().item(),
+                               val_mask_defect_mean=fake_d['mask'].mean().item(),
+                               val_mask_normal_mean=fake_n['mask'].mean().item(),
+                               val_mask_defect_std=fake_d['mask'].std(unbiased=False).item(),
+                               val_rgb_change_mean=(fake_d['output']-normal).abs().mean().item())
+                n = normal.size(0)
+                for key,value in metrics.items():
+                    if not torch.isfinite(torch.tensor(value)):
+                        raise ValueError(f'Non-finite validation metric: {key}')
+                    totals[key]=totals.get(key,0.)+value*n
+                count+=n
+                if save_samples and index == 0:
+                    directory=self.samples_dir/f'epoch_{epoch:04d}'
+                    for i in range(min(n,4)):
+                        images={'01_normal_input':normal[i],'02_fake_defect':fake_d['output'][i],
+                                '03_internal_alpha_debug':fake_d['mask'][i], '04_recon_normal':recon_n['output'][i],
+                                '05_real_defect_unpaired_reference':defect[i],'06_fake_normal':fake_n['output'][i],
+                                '07_recon_defect':recon_d['output'][i],
+                                '08_rgb_difference_debug':(fake_d['output'][i]-normal[i]).abs().clamp(0,2)-1}
+                        for name,image in images.items():
+                            save_rgb_image(image,directory/f'sample_{i}_{name}.png')
+            if count == 0:
+                raise ValueError('Validation loader is empty; no valid checkpoint selection metric')
+            result={k:v/count for k,v in totals.items()}
+            directory=self.output_dir/'validation'
+            directory.mkdir(parents=True,exist_ok=True)
+            (directory/f'epoch_{epoch:04d}.json').write_text(json.dumps({
+                'metrics':result,'sample_count':count,'critic_loss_excludes_gradient_penalty':True,
+                'selection_metric':'val_cyc_normal + val_cyc_defect (reconstruction proxy, not realism)'},indent=2),encoding='utf-8')
+            return result
+        finally:
+            self.model.train(previous)

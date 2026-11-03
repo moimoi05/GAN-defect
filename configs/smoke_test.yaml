@@ -1,10 +1,10 @@
 experiment:
   name: smoke_test_cpu
   seed: 42
-  description: "CPU Smoke test configuration for testing pipeline execution and checkpoints"
-
+  description: 'CPU logic smoke only: explicit 32px resized views, reduced widths/depth;
+    does not validate 1024 quality or VRAM'
 data:
-  image_size: 128
+  image_size: 32
   channels: 3
   data_root: .
   train_manifest: training/manifests/train.csv
@@ -12,47 +12,44 @@ data:
   test_manifest: training/manifests/test.csv
   num_workers: 0
   pin_memory: false
-
 model:
   generator:
-    base_channels: 16
-    num_resblocks: 2
+    base_channels: 4
+    num_resblocks: 1
     num_classes: 1
     use_spade: true
     use_noise_injection: true
   discriminator:
-    base_channels: 16
+    base_channels: 4
     num_scales: 1
     num_classes: 1
-
+    num_layers: 3
+  architecture: defectgan_paper_baseline
 training:
   device: cpu
   batch_size: 1
   gradient_accumulation_steps: 1
   mixed_precision: none
   epochs: 1
-
   optimizer:
     lr_g: 0.0001
-    lr_d: 0.0004
-    beta1: 0.0
+    lr_d: 0.0001
+    beta1: 0.5
     beta2: 0.999
     weight_decay: 0.0
-
   scheduler:
     type: none
-
   loss_weights:
-    lambda_adv: 1.0
-    lambda_cls: 1.0
-    lambda_cyc: 10.0
-    lambda_rec: 10.0
-    lambda_mask: 0.1
-
+    lambda_cls_real: 2.0
+    lambda_cls_fake: 5.0
+    lambda_rec: 5.0
+    lambda_sd_cyc: 5.0
+    lambda_sd_con: 1.0
+    lambda_gp: 10.0
   checkpoint_interval: 1
   validation_interval: 1
   sample_interval: 1
-
+  n_critic: 5
 output:
   root: outputs/smoke_test
   save_rgb_samples: true

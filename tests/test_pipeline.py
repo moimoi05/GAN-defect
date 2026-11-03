@@ -77,7 +77,7 @@ def test_trainer_single_step_and_checkpoint():
         def __len__(self):
             return 2
         def __getitem__(self, idx):
-            return dummy_data
+            return {**dummy_data, "normal": dummy_data["normal"][idx], "defect": dummy_data["defect"][idx]}
 
     loader = DataLoader(DummyDataset(), batch_size=2)
 
@@ -98,6 +98,8 @@ def test_trainer_single_step_and_checkpoint():
         assert torch.isfinite(torch.tensor(logs["g_loss"]))
         assert torch.isfinite(torch.tensor(logs["d_loss"]))
 
+        # Only completed epochs are safe to resume. Direct microsteps are not.
+        trainer.train()
         # Checkpoint save/load test
         ckpt_path = Path(tmp_dir) / "test_ckpt.pth"
         trainer.save_checkpoint(ckpt_path)
@@ -105,7 +107,7 @@ def test_trainer_single_step_and_checkpoint():
 
         # Load back
         trainer.load_checkpoint(ckpt_path)
-        assert trainer.global_step == 0
+        assert trainer.global_step == 1
 
 
 def test_sliding_window_inference():

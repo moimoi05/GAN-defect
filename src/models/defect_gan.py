@@ -1,7 +1,7 @@
 """Defect-GAN full model wrapper.
 
-Combines dual generators (defacement & restoration) with dual discriminators
-as described in:
+Provides a paper-inspired shared-network baseline and a separate legacy
+dual-network variant, based on:
     "Defect-GAN: High-Fidelity Defect Synthesis for Automated Defect Inspection"
     (arXiv: 2103.15158)
 
@@ -21,20 +21,14 @@ import torch
 import torch.nn as nn
 
 from src.models.generator import DefectGANGenerator
-from src.models.discriminator import MultiscaleDiscriminator
+from src.models.discriminator import MultiscaleDiscriminator, StarGANDiscriminator
 
 
 class DefectGAN(nn.Module):
     """Complete Defect-GAN model with bidirectional translation.
 
-    Components:
-        - ``G_n2d``: Generator for normal → defect (defacement).
-        - ``G_d2n``: Generator for defect → normal (restoration).
-        - ``D_defect``: Discriminator for the defect domain.
-        - ``D_normal``: Discriminator for the normal domain.
-
-    Both generators share the same architecture (``DefectGANGenerator``)
-    but maintain **separate** weights.
+    Directional names alias the same generator and critic in the paper
+    baseline; the legacy variant retains separate networks and checkpoints.
     """
 
     def __init__(
@@ -45,6 +39,8 @@ class DefectGAN(nn.Module):
         num_classes: int = 1,
         num_res_blocks: int = 6,
         num_disc_scales: int = 2,
+        architecture: str = "defectgan_custom_legacy",
+        num_disc_layers: int = 6,
     ) -> None:
         """Initialise the full Defect-GAN model.
 
@@ -58,28 +54,35 @@ class DefectGAN(nn.Module):
         """
         super().__init__()
 
-        # ---- Generators (separate weights, same architecture) ----
+        if architecture not in ("defectgan_paper_baseline", "defectgan_custom_legacy"):
+            raise ValueError("Unknown DefectGAN architecture")
+        self.architecture = architecture
+        paper = architecture == "defectgan_paper_baseline"
+        gen_options = {"encoder_stride": 4, "scalar_noise": True} if paper else {}
+        # ---- Generators ----
         self.G_n2d = DefectGANGenerator(
             in_channels=in_channels,
             base_channels=base_channels_g,
             num_classes=num_classes,
             num_res_blocks=num_res_blocks,
+            **gen_options,
         )
-        self.G_d2n = DefectGANGenerator(
+        self.G_d2n = self.G_n2d if paper else DefectGANGenerator(
             in_channels=in_channels,
             base_channels=base_channels_g,
             num_classes=num_classes,
             num_res_blocks=num_res_blocks,
+            **gen_options,
         )
 
         # ---- Discriminators ----
-        self.D_defect = MultiscaleDiscriminator(
+        self.D_defect = StarGANDiscriminator(in_channels, base_channels_d, num_classes, num_disc_layers) if paper else MultiscaleDiscriminator(
             in_channels=in_channels,
             base_channels=base_channels_d,
             num_classes=num_classes,
             num_scales=num_disc_scales,
         )
-        self.D_normal = MultiscaleDiscriminator(
+        self.D_normal = self.D_defect if paper else MultiscaleDiscriminator(
             in_channels=in_channels,
             base_channels=base_channels_d,
             num_classes=num_classes,
@@ -96,6 +99,7 @@ class DefectGAN(nn.Module):
         self,
         normal_img: torch.Tensor,
         c: Optional[torch.Tensor] = None,
+        spatial_map=None, noise_mode=None, generator=None,
     ) -> Dict[str, torch.Tensor]:
         """Translate a normal image to the defect domain.
 
@@ -107,12 +111,15 @@ class DefectGAN(nn.Module):
             Generator output dict with ``'output'``, ``'foreground'``,
             ``'mask'`` keys.
         """
-        return self.G_n2d(normal_img, c)
+        if c is None:
+            c = normal_img.new_ones(normal_img.shape[0], self.num_classes)
+        return self.G_n2d(normal_img, c, spatial_map=spatial_map, noise_mode=noise_mode, generator=generator)
 
     def restoration(
         self,
         defect_img: torch.Tensor,
         c: Optional[torch.Tensor] = None,
+        spatial_map=None, noise_mode=None, generator=None,
     ) -> Dict[str, torch.Tensor]:
         """Translate a defect image to the normal domain.
 
@@ -124,7 +131,9 @@ class DefectGAN(nn.Module):
             Generator output dict with ``'output'``, ``'foreground'``,
             ``'mask'`` keys.
         """
-        return self.G_d2n(defect_img, c)
+        if self.architecture == "defectgan_paper_baseline":
+            c = defect_img.new_zeros(defect_img.shape[0], self.num_classes)
+        return self.G_d2n(defect_img, c, spatial_map=spatial_map, noise_mode=noise_mode, generator=generator)
 
     # ------------------------------------------------------------------
     # Cycle-consistency methods
@@ -147,8 +156,8 @@ class DefectGAN(nn.Module):
                   (contains ``'output'``, ``'foreground'``, ``'mask'``).
                 - ``fake_defect``: Intermediate defacement dict from G_n2d.
         """
-        fake_defect = self.G_n2d(normal_img, c)
-        recon_normal = self.G_d2n(fake_defect["output"], c)
+        fake_defect = self.defacement(normal_img, c)
+        recon_normal = self.restoration(fake_defect["output"], c)
         return recon_normal, fake_defect
 
     def cycle_restoration(
@@ -168,8 +177,8 @@ class DefectGAN(nn.Module):
                   (contains ``'output'``, ``'foreground'``, ``'mask'``).
                 - ``fake_normal``: Intermediate restoration dict from G_d2n.
         """
-        fake_normal = self.G_d2n(defect_img, c)
-        recon_defect = self.G_n2d(fake_normal["output"], c)
+        fake_normal = self.restoration(defect_img, c)
+        recon_defect = self.defacement(fake_normal["output"], c)
         return recon_defect, fake_normal
 
     # ------------------------------------------------------------------
@@ -229,12 +238,12 @@ class DefectGAN(nn.Module):
                 }
         """
         # Forward translations
-        fake_defect = self.G_n2d(normal_img, c)
-        fake_normal = self.G_d2n(defect_img, c)
+        fake_defect = self.defacement(normal_img, c)
+        fake_normal = self.restoration(defect_img, c)
 
         # Cycle reconstructions
-        recon_normal = self.G_d2n(fake_defect["output"], c)
-        recon_defect = self.G_n2d(fake_normal["output"], c)
+        recon_normal = self.restoration(fake_defect["output"], c)
+        recon_defect = self.defacement(fake_normal["output"], c)
 
         return {
             "fake_defect": fake_defect,
@@ -242,3 +251,11 @@ class DefectGAN(nn.Module):
             "recon_normal": recon_normal,
             "recon_defect": recon_defect,
         }
+
+
+    def generator_parameters(self):
+        """Unique parameters even when direction aliases share weights."""
+        return iter(dict.fromkeys([*self.G_n2d.parameters(), *self.G_d2n.parameters()]))
+
+    def discriminator_parameters(self):
+        return iter(dict.fromkeys([*self.D_defect.parameters(), *self.D_normal.parameters()]))

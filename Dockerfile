@@ -2,8 +2,7 @@
 # DEFECT-GAN TRAINING & DEPLOYMENT DOCKERFILE
 # ==============================================================================
 # Base Image: Official PyTorch with CUDA 12.1 runtime and cuDNN 8
-# Compatible with NVIDIA Drivers >= 530.30.02 (Linux)
-# Fallback Note: For older NVIDIA drivers (>= 520), switch to pytorch:2.1.2-cuda11.8-cudnn8-runtime
+# Check target NVIDIA driver compatibility with CUDA 12.1 before GPU smoke.
 #
 # Build command:
 #   docker build -t defectgan:latest .
@@ -21,7 +20,7 @@
 #     defectgan:latest smoke-test
 # ==============================================================================
 
-FROM pytorch/pytorch:2.1.2-cuda12.1-cudnn8-runtime
+FROM pytorch/pytorch:2.1.2-cuda12.1-cudnn8-runtime@sha256:3387e598cb94fc248d82e712a65b10931a990cea3a2e76362ca30d135f565de4
 
 LABEL maintainer="RTC R&D Computer Vision Team"
 LABEL project="Defect-GAN Industrial Scratch Synthesis"
@@ -60,7 +59,7 @@ COPY tests/ tests/
 COPY docker/entrypoint.sh docker/entrypoint.sh
 
 # Ensure entrypoint is executable
-RUN chmod +x docker/entrypoint.sh
+RUN sed -i 's/\r$//' docker/entrypoint.sh && chmod +x docker/entrypoint.sh
 
 # Create mount point directories
 RUN mkdir -p /workspace/data /workspace/outputs

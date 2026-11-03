@@ -1,14 +1,15 @@
-# Core Deep Learning (Base image in Docker already includes PyTorch with CUDA)
-torch>=2.1.0
-numpy>=1.24.0
-
-# Image Processing
-Pillow>=9.5.0
-opencv-python-headless>=4.8.0
-
-# Configuration & Utilities
-PyYAML>=6.0
-tqdm>=4.66.0
-
-# Testing & Quality Assurance
-pytest>=7.4.0
+# Reproducible compatibility baseline. Docker supplies CPython 3.10 / CUDA 12.1.
+# Torch 2.1.2 requires Python 3.8-3.11; use Python 3.11 for host installation.
+torch==2.1.2
+# Keep NumPy 1.x ABI for the selected PyTorch build.
+numpy==1.26.4
+Pillow==10.4.0
+opencv-python-headless==4.10.0.84
+PyYAML==6.0.2
+tqdm==4.66.5
+pytest==8.3.3
+pytest-cov==5.0.0
+coverage==7.6.4
+iniconfig==2.0.0
+packaging==24.1
+pluggy==1.5.0

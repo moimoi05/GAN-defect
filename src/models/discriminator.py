@@ -195,3 +195,34 @@ class MultiscaleDiscriminator(nn.Module):
                 current = self.downsample(current)
 
         return results
+
+
+class StarGANDiscriminator(nn.Module):
+    """Single shared raw PatchGAN critic with auxiliary image classification.
+
+    Global pooling adapts the class head to native 1024px. Depth/channel cap
+    are project settings; Defect-GAN refers to StarGAN without listing them.
+    No normalization is used in the WGAN-GP critic.
+    """
+
+    def __init__(self, in_channels=3, base_channels=64, num_classes=1, num_layers=6):
+        super().__init__()
+        if in_channels != 3 or num_layers < 1:
+            raise ValueError("Expected RGB and positive critic depth")
+        layers = []
+        current = in_channels
+        for i in range(num_layers):
+            channels = min(base_channels * 2**i, 2048)
+            layers.extend([nn.Conv2d(current, channels, 4, 2, 1), nn.LeakyReLU(.01)])
+            current = channels
+        self.trunk = nn.Sequential(*layers)
+        self.num_layers = num_layers
+        self.src = nn.Conv2d(current, 1, 3, 1, 1, bias=False)
+        self.cls = nn.Sequential(nn.AdaptiveAvgPool2d(1), nn.Flatten(), nn.Linear(current, num_classes, bias=False))
+        self.apply(PatchGANDiscriminator._init_weights)
+
+    def forward(self, x):
+        if min(x.shape[-2:]) < 2**self.num_layers:
+            raise ValueError("Input too small for configured critic depth")
+        h = self.trunk(x)
+        return [(self.src(h), self.cls(h))]

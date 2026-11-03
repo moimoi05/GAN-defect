@@ -1,0 +1,16 @@
+# Technical fix report
+
+Scope: working tree at HEAD `adccccf898bf1a14fc4235cf4df3f2a76f43b34b` contained extensive uncommitted work when this session began; changes below describe the resulting tree, not an assertion that all changes were authored in this session. No dataset or historical audit reports were intentionally modified. See `verification_report.md` for actual execution evidence and limits.
+
+| Severity / issue | Root cause and affected files | Resulting approach | Verification / status |
+|---|---|---|---|
+| P0 paper alignment | Original commit had independent G/D and LSGAN; no spatial-cycle objective (`src/models`, `src/losses`). | Shared G/critic paper-inspired baseline; separate legacy topology. WGAN-GP, real/fake classification, two RGB cycles, spatial cycle and area constraint. Architectural details and settings are adaptations, not exact reproduction. | See `paper_alignment_review.md` and verification report. Old and new checkpoints are not interchangeable. |
+| P0 optimization | Accumulation remainder and update scheduling could lose samples or use wrong normalization (`src/engine/trainer.py`). | Accumulation groups, actual group length, critic schedule and explicit counters; update evidence and finite checks. | Trainer regression and smoke evidence in verification report. |
+| P0 checkpoint/resume | Best metric ignored and incomplete epochs could be mistaken for safe resume (`trainer.py`). | Schema and safe epoch-boundary policy; latest/best/periodic checkpoints, unsafe partial/emergency checkpoints refused for resume. | Trainer regressions and smoke; exact mid-epoch resume not supported. |
+| P0 AMP | Torch API/version mismatch and unconditional precision choices. | CUDA AMP compatibility, explicit modes and hardware checks; gradient penalty in FP32. | CPU tests do not verify CUDA AMP or pinned container runtime. |
+| P0 data paths | Code root conflated with data root; validation could write manifests. | Read-only validation and explicit generation; portable root-relative paths, independent DATA_DIR and OUTPUT_DIR. | Dataset validation and tests; see verification report. |
+| P1 inference noise/control | Eval suppressed noise; spatial map could overwrite restoration category. | Explicit deterministic/stochastic noise and generator seed; spatial map modulates category, ROI/protect compositing separate. | Small tensor regression tests; no proof of learned diversity. |
+| P1 tiles | Small images, stride/coverage and GPU-wide buffers could fail. | Pad/crop, stride validation, CPU accumulation and finite blending, patchwise device transfer. | CPU inference tests; real 11K peak VRAM not measured. |
+| P2 evaluation | Reconstruction was at risk of being treated as realism. | Logs component metrics, mask stats and RGB/debug previews; checkpoint selection is reconstruction proxy only. | Qualitative realism, memorization and S942 transfer remain unvalidated. |
+
+Dataset restrictions and research evaluation plan are documented in `data_integrity_review.md`, `README.md` and `TRAINING_GUIDE.md`. Source-image hashes are compared against the existing pre-task inventory in `outputs/audit/current_integrity.json`; this comparison is not an independent original-source provenance audit. No full training was performed.

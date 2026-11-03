@@ -10,12 +10,17 @@ Validates:
 6. Zero data leakage across splits at the source-image level.
 """
 
+import argparse
 import csv
+import json
+import os
 import sys
 from pathlib import Path
 from PIL import Image
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+from src.datasets.f971_dataset import resolve_patch_path
 
 # Excluded patch names as mandated by final review
 HOLD_PATCHES = {
@@ -121,6 +126,8 @@ def get_approved_defect_patches(root: Path, source_splits: dict) -> list:
             src_img = f"{stem}.jpg"
 
             # Verify against source splits
+            if src_img not in source_splits:
+                raise ValueError(f"Source missing from approved source split map: {src_img}")
             if src_img in source_splits:
                 assigned_split = source_splits[src_img]
                 if assigned_split != split:
@@ -148,6 +155,9 @@ def validate_image_properties(items: list):
     for idx, item in enumerate(items):
         path = item["full_path"]
         with Image.open(path) as img:
+            if img.format != "PNG":
+                raise ValueError(f"Image {path} is not PNG")
+            img.load()  # Decode pixels to detect truncated/corrupt files.
             if img.mode != "RGB":
                 raise ValueError(f"Image {path} mode is {img.mode}, expected RGB!")
             if img.size != (1024, 1024):
@@ -176,91 +186,97 @@ def check_data_leakage(items: list):
     print(f"  Source-level data leakage check: PASS ({len(source_to_splits)} unique source images).")
 
 
-def write_manifests(items: list, root: Path):
-    """Write train.csv, val.csv, test.csv to training/manifests/."""
-    manifest_dir = root / "training" / "manifests"
-    manifest_dir.mkdir(parents=True, exist_ok=True)
+EXPECTED_COUNTS = {"train": {"clean": 41, "defect": 31},
+                   "validation": {"clean": 9, "defect": 8},
+                   "test": {"clean": 17, "defect": 8}}
+FIELDS = ["filename", "domain", "split", "source_image", "patch_path"]
 
-    fieldnames = ["filename", "domain", "split", "source_image", "patch_path"]
 
-    split_map = {
-        "train": manifest_dir / "train.csv",
-        "validation": manifest_dir / "val.csv",
-        "test": manifest_dir / "test.csv",
-    }
+def approved_items(root: Path) -> list:
+    """Read approved audit records; never write data or infer new patches."""
+    return get_approved_clean_patches(root) + get_approved_defect_patches(root, load_source_splits(root))
 
-    split_items = {"train": [], "validation": [], "test": []}
-    for item in items:
-        split_items[item["split"]].append(item)
 
-    for split_name, out_path in split_map.items():
-        rows = split_items[split_name]
-        with open(out_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
+def validate_baseline(data_root: Path, manifest_dir: Path = None) -> dict:
+    """Validate existing manifests against approved audits, strictly read-only."""
+    root = Path(data_root).resolve()
+    directory = Path(manifest_dir) if manifest_dir else root / "training/manifests"
+    expected = approved_items(root)
+    expected_keys = {tuple(str(item[k]) for k in FIELDS) for item in expected}
+    if len(expected_keys) != 114:
+        raise ValueError(f"Approved audit records do not identify 114 unique patches: {len(expected_keys)}")
+    items = []
+    counts = {}
+    for split, filename in (("train", "train.csv"), ("validation", "val.csv"), ("test", "test.csv")):
+        with (directory / filename).open(newline="", encoding="utf-8-sig") as f:
+            rows = list(csv.DictReader(f))
+        counts[split] = {"clean": 0, "defect": 0}
+        for row in rows:
+            if row["split"] != split or row["domain"] not in counts[split]:
+                raise ValueError(f"Invalid split/domain in {filename}: {row}")
+            if row["filename"] in ALL_EXCLUDED_DEFECT:
+                raise ValueError(f"Excluded patch in manifest: {row['filename']}")
+            full_path = resolve_patch_path(root, row["patch_path"])
+            if not full_path.is_file():
+                raise FileNotFoundError(full_path)
+            items.append({**row, "full_path": full_path})
+            counts[split][row["domain"]] += 1
+        if counts[split] != EXPECTED_COUNTS[split]:
+            raise ValueError(f"Approved split count mismatch: {split}: {counts[split]}")
+    actual_keys = [tuple(str(item[k]) for k in FIELDS) for item in items]
+    if len(actual_keys) != len(set(actual_keys)) or set(actual_keys) != expected_keys:
+        missing = expected_keys - set(actual_keys)
+        extra = set(actual_keys) - expected_keys
+        raise ValueError(f"Manifest differs from approved records. Missing={missing}, extra={extra}")
+    validate_image_properties(items)
+    check_data_leakage(items)
+    replacements = sum(item.get("disposition") == "REPLACE_FROM_SOURCE_RGB" for item in expected)
+    if replacements != 39:
+        raise ValueError(f"Expected 39 approved clean replacements, got {replacements}")
+    result = {"total": len(items), "counts": counts, "clean_replacements": replacements,
+              "source_count": len({item["source_image"] for item in items}),
+              "rgb_png_1024": True, "source_leakage": False, "excluded_patch_count": 0}
+    print(json.dumps(result, indent=2))
+    return result
+
+
+def generate_manifests(data_root: Path, output_dir: Path) -> None:
+    """Explicit generation into a new, separate directory; approved manifests stay immutable."""
+    root, directory = Path(data_root).resolve(), Path(output_dir).resolve()
+    protected = [root / name for name in ("training", "F971", "S942", "reports", "experiments")]
+    if directory == root or any(directory.is_relative_to(p) for p in protected):
+        raise ValueError("Manifest generation requires a separate output directory outside protected data")
+    if directory.exists() and any(directory.iterdir()):
+        raise ValueError("Manifest output directory must be new or empty")
+    items = approved_items(root)
+    validate_image_properties(items)
+    check_data_leakage(items)
+    directory.mkdir(parents=True, exist_ok=True)
+    for split, filename in (("train", "train.csv"), ("validation", "val.csv"), ("test", "test.csv")):
+        with (directory / filename).open("x", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=FIELDS)
             writer.writeheader()
-            for r in rows:
-                writer.writerow({
-                    "filename": r["filename"],
-                    "domain": r["domain"],
-                    "split": r["split"],
-                    "source_image": r["source_image"],
-                    "patch_path": r["patch_path"],
-                })
-        print(f"  Wrote {len(rows)} entries to {out_path.relative_to(root)}")
+            writer.writerows({k: item[k] for k in FIELDS} for item in items if item["split"] == split)
+    validate_baseline(root, directory)
 
 
-def main():
-    print("=" * 60)
-    print("DEFECT-GAN DATASET VALIDATION & MANIFEST GENERATOR")
-    print("=" * 60)
-
-    source_splits = load_source_splits(PROJECT_ROOT)
-    clean_items = get_approved_clean_patches(PROJECT_ROOT)
-    defect_items = get_approved_defect_patches(PROJECT_ROOT, source_splits)
-
-    all_items = clean_items + defect_items
-
-    print(f"Loaded {len(clean_items)} approved clean patches.")
-    print(f"Loaded {len(defect_items)} approved defect patches.")
-    print(f"Total approved patches: {len(all_items)}")
-
-    # Verify counts
-    counts = {
-        "train": {"defect": 0, "clean": 0},
-        "validation": {"defect": 0, "clean": 0},
-        "test": {"defect": 0, "clean": 0},
-    }
-    for item in all_items:
-        counts[item["split"]][item["domain"]] += 1
-
-    print("\nPatch Counts by Split:")
-    print(f"  Train:      Defect={counts['train']['defect']} (target 31), Clean={counts['train']['clean']} (target 41), Total={counts['train']['defect'] + counts['train']['clean']} (target 72)")
-    print(f"  Validation: Defect={counts['validation']['defect']} (target 8), Clean={counts['validation']['clean']} (target 9), Total={counts['validation']['defect'] + counts['validation']['clean']} (target 17)")
-    print(f"  Test:       Defect={counts['test']['defect']} (target 8), Clean={counts['test']['clean']} (target 17), Total={counts['test']['defect'] + counts['test']['clean']} (target 25)")
-    print(f"  GRAND TOTAL: Defect={len(defect_items)} (target 47), Clean={len(clean_items)} (target 67), Total={len(all_items)} (target 114)")
-
-    # Assert exact targets
-    assert counts["train"]["defect"] == 31, f"Expected 31 train defects, got {counts['train']['defect']}"
-    assert counts["train"]["clean"] == 41, f"Expected 41 train clean, got {counts['train']['clean']}"
-    assert counts["validation"]["defect"] == 8, f"Expected 8 val defects, got {counts['validation']['defect']}"
-    assert counts["validation"]["clean"] == 9, f"Expected 9 val clean, got {counts['validation']['clean']}"
-    assert counts["test"]["defect"] == 8, f"Expected 8 test defects, got {counts['test']['defect']}"
-    assert counts["test"]["clean"] == 17, f"Expected 17 test clean, got {counts['test']['clean']}"
-    assert len(all_items) == 114, f"Expected 114 total patches, got {len(all_items)}"
-
-    # Validate image properties
-    validate_image_properties(all_items)
-
-    # Validate data leakage
-    check_data_leakage(all_items)
-
-    # Write manifests
-    print("\nWriting training manifests...")
-    write_manifests(all_items, PROJECT_ROOT)
-
-    print("\nDataset validation and manifest generation COMPLETED SUCCESSFULLY!")
-    print("=" * 60)
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Read-only validation of approved Defect-GAN RGB baseline")
+    parser.add_argument("--data-root", type=Path, default=Path(os.environ.get("DATA_DIR", PROJECT_ROOT)))
+    parser.add_argument("--manifest-dir", type=Path, help="Optional manifests in code image; images remain under DATA_DIR")
+    parser.add_argument("--generate-manifests", action="store_true")
+    parser.add_argument("--output-dir", type=Path, help="Required separate, empty output directory for explicit generation")
+    args = parser.parse_args(argv)
+    if args.generate_manifests:
+        if args.output_dir is None:
+            parser.error("--generate-manifests requires --output-dir")
+        generate_manifests(args.data_root, args.output_dir)
+    else:
+        if args.output_dir is not None:
+            parser.error("--output-dir applies only with --generate-manifests")
+        validate_baseline(args.data_root, args.manifest_dir)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

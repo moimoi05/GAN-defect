@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import csv
 import random
-from pathlib import Path
+import os
+from pathlib import Path, PureWindowsPath
 from typing import Callable, Dict, List, Optional, Union
 
 from PIL import Image
@@ -12,6 +13,19 @@ import torch
 from torch.utils.data import Dataset
 
 from src.datasets.transforms import get_transforms
+
+
+def resolve_patch_path(data_root: Union[str, Path], relative_path: str) -> Path:
+    """Resolve portable manifest paths strictly inside the explicit dataset mount."""
+    normalized = relative_path.replace("\\", "/")
+    relative = Path(normalized)
+    if relative.is_absolute() or PureWindowsPath(normalized).drive:
+        raise ValueError(f"Manifest patch_path must be relative: {relative_path}")
+    root = Path(data_root).resolve()
+    resolved = (root / relative).resolve()
+    if not resolved.is_relative_to(root):
+        raise ValueError(f"Manifest patch_path escapes dataset root: {relative_path}")
+    return resolved
 
 
 class DefectGANDataset(Dataset):
@@ -44,7 +58,10 @@ class DefectGANDataset(Dataset):
         """
         super().__init__()
         self.manifest_path = Path(manifest_path)
-        self.data_root = Path(data_root) if data_root else Path(".")
+        self.data_root = Path(data_root) if data_root else Path(os.environ.get("DATA_DIR", "."))
+        if split not in {"train", "validation", "val", "test"}:
+            raise ValueError(f"Unknown dataset split: {split}")
+        split = "validation" if split == "val" else split
         self.split = split
         self.image_size = image_size
         self.transform = transform or get_transforms(split=split, image_size=image_size)
@@ -69,18 +86,13 @@ class DefectGANDataset(Dataset):
             for row in reader:
                 domain = row["domain"].strip().lower()
                 rel_path = row["patch_path"].strip()
+                if row.get("split", self.split) != self.split:
+                    raise ValueError(f"Manifest split does not match requested split {self.split}")
 
                 # Verify file can be resolved relative to data_root
-                full_path = self.data_root / rel_path
+                full_path = resolve_patch_path(self.data_root, rel_path)
                 if not full_path.exists():
-                    # Fallback: check if path is relative to manifest directory's parent
-                    alt_path = self.manifest_path.resolve().parent.parent.parent / rel_path
-                    if alt_path.exists():
-                        full_path = alt_path
-                    else:
-                        raise FileNotFoundError(
-                            f"Image patch not found: {full_path} (also checked {alt_path})"
-                        )
+                    raise FileNotFoundError(f"Image patch not found in data_root: {full_path}")
 
                 item = {
                     "filename": row.get("filename", full_path.name),
@@ -106,7 +118,9 @@ class DefectGANDataset(Dataset):
         """Open image as RGB and apply transforms."""
         with Image.open(path) as img:
             if img.mode != "RGB":
-                img = img.convert("RGB")
+                raise ValueError(f"Image must be native RGB: {path} (got {img.mode})")
+            if img.format != "PNG":
+                raise ValueError(f"Image must be PNG: {path}")
             return self.transform(img)
 
     def __getitem__(self, idx: int) -> Dict[str, Union[torch.Tensor, str]]:

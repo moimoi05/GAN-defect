@@ -11,11 +11,11 @@ from typing import Any, Dict
 
 import yaml
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 
 from src.datasets.f971_dataset import DefectGANDataset
 from src.models.defect_gan import DefectGAN
-from src.losses.gan_losses import DefectGANLoss
+from src.losses.gan_losses import DefectGANLoss, PaperDefectGANLoss
 from src.engine.trainer import DefectGANTrainer
 from src.utils import set_seed, count_parameters
 
@@ -44,7 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Execute 2 steps on CPU/GPU to verify code without full training.",
+        help="Execute a bounded smoke epoch proving actual G/D optimizer updates.",
     )
     parser.add_argument(
         "--smoke-test",
@@ -68,6 +68,18 @@ def load_config(config_path: Path) -> Dict[str, Any]:
     return config
 
 
+def bounded_smoke_dataset(dataset, config: dict, batch_size: int):
+    """Use a complete small loader epoch; its checkpoint is smoke-only."""
+    training = config.setdefault("training", {})
+    accumulation = int(training.get("gradient_accumulation_steps", 1))
+    critic_steps = int(training.get("n_critic", 1))
+    if min(batch_size, accumulation, critic_steps) < 1:
+        raise ValueError("batch size, accumulation and n_critic must be positive")
+    count = min(len(dataset), batch_size * accumulation * critic_steps)
+    training["smoke_subset_samples"] = count
+    return Subset(dataset, range(count))
+
+
 def main() -> None:
     args = parse_args()
     config_path = Path(args.config)
@@ -83,12 +95,10 @@ def main() -> None:
     # 2. Output directory
     output_cfg = config.get("output", {})
     output_root = Path(os.environ.get("OUTPUT_DIR", output_cfg.get("root", "outputs")))
+    if dry_run:
+        output_root = output_root / "_smoke"
     output_dir = output_root / config.get("experiment", {}).get("name", "defectgan_run")
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Save copy of config
-    with open(output_dir / "config.yaml", "w", encoding="utf-8") as f:
-        yaml.dump(config, f)
 
     # Setup file logging
     log_file = output_dir / "train.log"
@@ -132,6 +142,12 @@ def main() -> None:
 
     training_cfg = config.get("training", {})
     batch_size = training_cfg.get("batch_size", 1)
+    if dry_run:
+        config = {**config, "smoke_subset": True}
+        train_dataset = bounded_smoke_dataset(train_dataset, config, batch_size)
+        logger.info("Smoke-only bounded training subset: %d samples; checkpoint scope=smoke_subset", len(train_dataset))
+    with open(output_dir / "config.yaml", "w", encoding="utf-8") as f:
+        yaml.safe_dump(config, f)
     num_workers = data_cfg.get("num_workers", 0) if device.type == "cpu" else data_cfg.get("num_workers", 4)
     pin_mem = data_cfg.get("pin_memory", False) and device.type == "cuda"
 
@@ -141,7 +157,7 @@ def main() -> None:
         shuffle=True,
         num_workers=num_workers,
         pin_memory=pin_mem,
-        drop_last=True,
+        drop_last=False,
     )
     val_loader = DataLoader(
         val_dataset,
@@ -173,6 +189,8 @@ def main() -> None:
         num_classes=num_classes,
         num_res_blocks=num_res,
         num_disc_scales=num_scales,
+        architecture=model_cfg.get("architecture", "defectgan_paper_baseline"),
+        num_disc_layers=disc_cfg.get("num_layers", 6),
     )
 
     params = count_parameters(model)
@@ -180,13 +198,10 @@ def main() -> None:
 
     # 6. Loss function
     loss_weights = training_cfg.get("loss_weights", {})
-    criterion = DefectGANLoss(
-        lambda_adv=loss_weights.get("lambda_adv", 1.0),
-        lambda_cls=loss_weights.get("lambda_cls", 1.0),
-        lambda_cyc=loss_weights.get("lambda_cyc", 10.0),
-        lambda_rec=loss_weights.get("lambda_rec", 10.0),
-        lambda_mask=loss_weights.get("lambda_mask", 0.1),
-    )
+    if model.architecture == "defectgan_paper_baseline":
+        criterion = PaperDefectGANLoss(**loss_weights)
+    else:
+        criterion = DefectGANLoss(**loss_weights)
 
     # 7. Trainer
     trainer = DefectGANTrainer(

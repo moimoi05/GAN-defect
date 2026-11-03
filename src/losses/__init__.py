@@ -2,6 +2,8 @@
 
 from src.losses.gan_losses import (
     LSGANLoss,
+    WGANLoss,
+    PaperDefectGANLoss,
     ClassificationLoss,
     CycleConsistencyLoss,
     IdentityLoss,
@@ -11,6 +13,8 @@ from src.losses.gan_losses import (
 
 __all__ = [
     "LSGANLoss",
+    "WGANLoss",
+    "PaperDefectGANLoss",
     "ClassificationLoss",
     "CycleConsistencyLoss",
     "IdentityLoss",

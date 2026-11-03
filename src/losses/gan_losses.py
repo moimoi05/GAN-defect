@@ -1,16 +1,12 @@
 """Loss functions for Defect-GAN.
 
-Implements all optimization objectives from:
+Contains the paper-inspired objective and the separate legacy objective for:
     "Defect-GAN: High-Fidelity Defect Synthesis for Automated Defect Inspection"
     (arXiv: 2103.15158)
 
-Loss components:
-    1. Adversarial Loss (LSGAN / MSE): forces realism on generated images.
-    2. Auxiliary Classification Loss: ensures correct defect category conditioning.
-    3. Cycle Consistency Loss (L1): preserves background structure across full cycles.
-    4. Reconstruction / Identity Loss (L1): preserves domain identity when input matches target.
-    5. Mask Regularization Loss (L1): encourages sparsity in the internal alpha/spatial mask,
-       strictly preserving flawless background areas.
+The baseline uses WGAN-GP, classification, image reconstruction and spatial
+distribution losses. LSGAN and identity loss belong to the legacy variant.
+Mask regularization encourages, but does not guarantee, background preservation.
 """
 
 from __future__ import annotations
@@ -263,3 +259,99 @@ class DefectGANLoss(nn.Module):
             "g_mask_normal": loss_mask_normal.item(),
         }
         return total_g_loss, log_dict
+
+
+class WGANLoss(nn.Module):
+    """Wasserstein objectives on raw critic patch scores, averaged per scale."""
+
+    def discriminator_loss(self, real_preds, fake_preds):
+        if not real_preds or len(real_preds) != len(fake_preds):
+            raise ValueError("Expected matching nonempty critic scales")
+        return torch.stack([fake.mean()-real.mean() for real,fake in zip(real_preds,fake_preds)]).mean()
+
+    def generator_loss(self, fake_preds):
+        if not fake_preds:
+            raise ValueError("Expected nonempty critic scales")
+        return -torch.stack([fake.mean() for fake in fake_preds]).mean()
+
+
+class PaperDefectGANLoss(nn.Module):
+    """Paper Eqs.6-12 with the WGAN-GP substitution from Sec.4.1.
+
+    The two symmetric directions are averaged (project reduction convention).
+    Paper specifies all five lambda values below; GP coefficient 10 is an
+    explicit project choice following WGAN-GP, unspecified in Defect-GAN.
+    No additional target-domain identity loss is included.
+    """
+    paper_baseline = True
+
+    def __init__(self, lambda_cls_real=2., lambda_cls_fake=5., lambda_rec=5.,
+                 lambda_sd_cyc=5., lambda_sd_con=1., lambda_gp=10.):
+        super().__init__()
+        weights = (lambda_cls_real,lambda_cls_fake,lambda_rec,lambda_sd_cyc,lambda_sd_con,lambda_gp)
+        if any(not torch.isfinite(torch.tensor(v)) or v < 0 for v in weights):
+            raise ValueError("Loss weights must be finite and nonnegative")
+        self.lambda_cls_real = lambda_cls_real
+        self.lambda_cls_fake = lambda_cls_fake
+        self.lambda_rec = lambda_rec
+        self.lambda_sd_cyc = lambda_sd_cyc
+        self.lambda_sd_con = lambda_sd_con
+        self.lambda_gp = lambda_gp
+        self.adv_loss = WGANLoss()
+        self.cls_loss = ClassificationLoss()
+
+    def gradient_penalty(self, critic, real, fake):
+        """Per-sample L2 input-gradient penalty on real/fake interpolation.
+
+        Detached endpoints prevent D loss updating G; FP32 ensures numerical
+        stability independently of the outer mixed-precision context.
+        """
+        if real.shape != fake.shape or real.ndim != 4:
+            raise ValueError("GP requires matching [B,C,H,W] endpoints")
+        with torch.autocast(device_type=real.device.type, enabled=False):
+            alpha = torch.rand(real.shape[0],1,1,1,device=real.device)
+            interpolated = (alpha*real.detach().float()+(1-alpha)*fake.detach().float()).requires_grad_(True)
+            predictions = critic(interpolated)
+            scores = torch.stack([p[0].flatten(1).mean(1) for p in predictions]).mean(0)
+            gradients = torch.autograd.grad(scores.sum(), interpolated, create_graph=True)[0]
+            penalty = ((gradients.flatten(1).norm(2,dim=1)-1)**2).mean()
+        check_tensor_valid(penalty, "gradient penalty")
+        return penalty
+
+    def compute_discriminator_loss(self, d_defect_real, d_defect_fake, d_normal_real,
+                                   d_normal_fake, target_cls_defect, target_cls_normal,
+                                   gradient_penalty=None):
+        adv_d = self.adv_loss.discriminator_loss([p[0] for p in d_defect_real],[p[0] for p in d_defect_fake])
+        adv_n = self.adv_loss.discriminator_loss([p[0] for p in d_normal_real],[p[0] for p in d_normal_fake])
+        cls_d = self.cls_loss([p[1] for p in d_defect_real],target_cls_defect)
+        cls_n = self.cls_loss([p[1] for p in d_normal_real],target_cls_normal)
+        gp = adv_d.new_zeros(()) if gradient_penalty is None else gradient_penalty
+        total = (adv_d+adv_n)/2 + self.lambda_cls_real*(cls_d+cls_n)/2 + self.lambda_gp*gp
+        check_tensor_valid(total,"paper discriminator loss")
+        return total, {"d_loss":total.item(),"d_adv_defect":adv_d.item(),"d_adv_normal":adv_n.item(),
+                       "d_cls_defect":cls_d.item(),"d_cls_normal":cls_n.item(),"d_gp":gp.item()}
+
+    def compute_generator_loss(self, normal_img, defect_img, fake_defect, fake_normal,
+                               recon_normal, recon_defect, id_defect, id_normal,
+                               d_defect_fake, d_normal_fake, target_cls_defect, target_cls_normal):
+        adv_d = self.adv_loss.generator_loss([p[0] for p in d_defect_fake])
+        adv_n = self.adv_loss.generator_loss([p[0] for p in d_normal_fake])
+        cls_d = self.cls_loss([p[1] for p in d_defect_fake],target_cls_defect)
+        cls_n = self.cls_loss([p[1] for p in d_normal_fake],target_cls_normal)
+        rec_n = F.l1_loss(recon_normal["output"],normal_img)
+        rec_d = F.l1_loss(recon_defect["output"],defect_img)
+        cyc_n = F.l1_loss(fake_defect["mask"],recon_normal["mask"])
+        cyc_d = F.l1_loss(fake_normal["mask"],recon_defect["mask"])
+        con_n = fake_defect["mask"].abs().mean()+recon_normal["mask"].abs().mean()
+        con_d = fake_normal["mask"].abs().mean()+recon_defect["mask"].abs().mean()
+        total = ((adv_d+adv_n)/2 + self.lambda_cls_fake*(cls_d+cls_n)/2
+                 +self.lambda_rec*(rec_n+rec_d)/2 +self.lambda_sd_cyc*(cyc_n+cyc_d)/2
+                 +self.lambda_sd_con*(con_n+con_d)/2)
+        check_tensor_valid(total,"paper generator loss")
+        return total, {"g_loss":total.item(),"g_adv_defect":adv_d.item(),"g_adv_normal":adv_n.item(),
+                       "g_cls_defect":cls_d.item(),"g_cls_normal":cls_n.item(),
+                       "g_cyc_normal":rec_n.item(),"g_cyc_defect":rec_d.item(),
+                       "g_rec":((rec_n+rec_d)/2).item(),"g_sd_cyc":((cyc_n+cyc_d)/2).item(),
+                       "g_sd_con":((con_n+con_d)/2).item(),
+                       "g_mask_defect":fake_defect["mask"].mean().item(),
+                       "g_mask_normal":fake_normal["mask"].mean().item()}

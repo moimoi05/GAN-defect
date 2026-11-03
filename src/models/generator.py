@@ -14,7 +14,18 @@ Key architectural features:
 
 from __future__ import annotations
 
-import math
+from contextvars import ContextVar
+
+_noise_settings = ContextVar("defectgan_noise_settings", default=(None, None))
+
+def compose_layers(input_rgb, foreground, mask):
+    """Differentiable RGB composition (paper Eqs. 2 and 4)."""
+    if input_rgb.ndim != 4 or input_rgb.shape[1] != 3 or foreground.shape != input_rgb.shape:
+        raise ValueError("Composition requires matching [B,3,H,W] RGB tensors")
+    if mask.shape != (input_rgb.shape[0], 1, *input_rgb.shape[2:]):
+        raise ValueError("Composition mask must be [B,1,H,W]")
+    return (1.0-mask)*input_rgb + mask*foreground
+
 from typing import Dict, Optional
 
 import torch
@@ -36,24 +47,22 @@ class AdaptiveNoiseInjection(nn.Module):
     how much stochasticity to admit per channel.
     """
 
-    def __init__(self, num_channels: int) -> None:
+    def __init__(self, num_channels: int, scalar: bool = False) -> None:
         super().__init__()
         # Learnable per-channel scale, initialised to 0 (identity at init)
-        self.weight = nn.Parameter(torch.zeros(1, num_channels, 1, 1))
+        self.weight = nn.Parameter(torch.zeros(1, 1 if scalar else num_channels, 1, 1))
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Apply noise injection.
-
-        Args:
-            x: Feature tensor of shape [B, C, H, W].
-
-        Returns:
-            Tensor of same shape with per-channel scaled noise added.
-        """
-        if self.training:
-            noise = torch.randn_like(x)
-            return x + self.weight * noise
-        return x
+    def forward(self, x: torch.Tensor, noise_mode=None, generator=None) -> torch.Tensor:
+        context_mode, context_generator = _noise_settings.get()
+        mode = noise_mode if noise_mode is not None else context_mode
+        rng = generator if generator is not None else context_generator
+        if mode not in (None, "deterministic", "stochastic"):
+            raise ValueError("noise_mode must be deterministic or stochastic")
+        enabled = self.training if mode is None else mode == "stochastic"
+        if not enabled:
+            return x
+        noise = torch.randn(x.shape, dtype=x.dtype, device=x.device, generator=rng)
+        return x + self.weight * noise
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +253,8 @@ class DefectGANGenerator(nn.Module):
         base_channels: int = 64,
         num_classes: int = 1,
         num_res_blocks: int = 6,
+        encoder_stride: int = 8,
+        scalar_noise: bool = False,
     ) -> None:
         """Initialise the Defect-GAN generator.
 
@@ -258,6 +269,9 @@ class DefectGANGenerator(nn.Module):
         assert in_channels == 3, "Generator only supports 3-channel RGB input."
 
         self.num_classes = num_classes
+        if encoder_stride not in (4, 8):
+            raise ValueError("encoder_stride must be 4 or 8")
+        self.encoder_stride = encoder_stride
         ch = base_channels  # shorthand
 
         # ---- Encoder ----
@@ -309,6 +323,19 @@ class DefectGANGenerator(nn.Module):
             nn.Sigmoid(),
         )  # M ∈ [0, 1]
 
+        if encoder_stride == 4:
+            self.enc4 = nn.Identity()
+            self.bottleneck = nn.Sequential(*[ResBlock(ch*4, use_noise=True) for _ in range(num_res_blocks)])
+            self.dec1 = nn.Identity()
+        if scalar_noise:
+            for module in self.modules():
+                if isinstance(module, AdaptiveNoiseInjection):
+                    module.weight = nn.Parameter(torch.zeros(1,1,1,1))
+            # Paper injects independently learned scalar noise in encoder blocks too.
+            for encoder in (self.enc1, self.enc2, self.enc3):
+                channels = encoder[0].out_channels
+                encoder.append(AdaptiveNoiseInjection(channels, scalar=True))
+
         # Apply weight initialisation
         self.apply(self._init_weights)
 
@@ -356,10 +383,18 @@ class DefectGANGenerator(nn.Module):
 
     # ----- forward -----
 
-    def forward(
+    def forward(self, x, c=None, spatial_map=None, noise_mode=None, generator=None):
+        token = _noise_settings.set((noise_mode, generator))
+        try:
+            return self._forward(x, c, spatial_map)
+        finally:
+            _noise_settings.reset(token)
+
+    def _forward(
         self,
         x: torch.Tensor,
         c: Optional[torch.Tensor] = None,
+        spatial_map: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """Generate a defect (or restored) image via layer-wise composition.
 
@@ -367,6 +402,9 @@ class DefectGANGenerator(nn.Module):
             x: Input RGB image tensor [B, 3, H, W], values in [-1, 1].
             c: Category vector [B, num_classes].  If ``None``, defaults to
                an all-ones vector (single defect class).
+            spatial_map: Optional [B, num_classes, H, W] control in [0, 1],
+                multiplied by the category vector to form the SPADE input.
+                It is neither the generated alpha nor an export-time ROI.
 
         Returns:
             Dictionary with keys:
@@ -374,6 +412,10 @@ class DefectGANGenerator(nn.Module):
                 ``'foreground'`` – raw foreground F [B, 3, H, W]
                 ``'mask'``       – spatial distribution map M [B, 1, H, W]
         """
+        if x.ndim != 4 or x.shape[1] != 3:
+            raise ValueError("Generator input must be [B,3,H,W]")
+        if any(n % self.encoder_stride for n in x.shape[2:]):
+            raise ValueError("Image dimensions must be divisible by encoder stride")
         batch_size = x.size(0)
         input_rgb = x  # keep reference for composition
 
@@ -393,9 +435,24 @@ class DefectGANGenerator(nn.Module):
         # ---- Decode (SPADE conditioned on category) ----
         # Build attribute map at coarsest decoder resolution and let SPADE
         # blocks internally resize as needed.
-        attr_map = self._build_attr_map(c, z.shape[2:])
+        if c.shape != (batch_size, self.num_classes):
+            raise ValueError("Category vector must be [B,num_classes]")
+        if spatial_map is not None:
+            expected = (batch_size, self.num_classes, *x.shape[2:])
+            if spatial_map.shape != expected or not torch.isfinite(spatial_map).all():
+                raise ValueError("Spatial map must be finite [B,num_classes,H,W]")
+            if (spatial_map < 0).any() or (spatial_map > 1).any():
+                raise ValueError("Spatial map values must lie in [0,1]")
+            # Spatial control modulates the requested category, rather than
+            # replacing it. In particular, the paper baseline's zero-valued
+            # restoration category must remain zero even if a map was supplied.
+            attr_map = spatial_map.to(device=x.device, dtype=x.dtype) * c.to(
+                device=x.device, dtype=x.dtype
+            ).unsqueeze(-1).unsqueeze(-1)
+        else:
+            attr_map = self._build_attr_map(c, z.shape[2:])
 
-        d1 = self.dec1(z, attr_map)     # [B, 256, H/4, W/4]
+        d1 = z if self.encoder_stride == 4 else self.dec1(z, attr_map)     # [B, 256, H/4, W/4]
         d2 = self.dec2(d1, attr_map)    # [B, 128, H/2, W/2]
         d3 = self.dec3(d2, attr_map)    # [B,  64, H,   W  ]
 
@@ -404,7 +461,7 @@ class DefectGANGenerator(nn.Module):
         mask = self.mask_head(d3)              # [B, 1, H, W]
 
         # ---- Layer-wise composition ----
-        output = (1.0 - mask) * input_rgb + mask * foreground
+        output = compose_layers(input_rgb, foreground, mask)
 
         return {
             "output": output,
