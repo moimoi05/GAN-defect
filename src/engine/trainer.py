@@ -3,6 +3,10 @@ from __future__ import annotations
 import json
 import logging
 import random
+import time
+from collections import defaultdict
+from tqdm import tqdm
+from src.engine.monitor import EarlyStopping, History
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Dict
@@ -44,6 +48,10 @@ class DefectGANTrainer:
         self.checkpoint_dir = self.output_dir / 'checkpoints'
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         cfg = config.get('training', {})
+        self.early_stopping = EarlyStopping(config.get('early_stopping', cfg.get('early_stopping')))
+        self.history = History(self.output_dir)
+        for module in model.modules():
+            module.activation_checkpointing = cfg.get('activation_checkpointing', False)
         self.use_amp, self.amp_dtype, self.use_scaler = resolve_precision(cfg.get('mixed_precision', 'auto'), device)
         self.evaluator = DefectGANEvaluator(model, criterion, val_loader, device, self.output_dir,
                                             use_amp=self.use_amp, amp_dtype=self.amp_dtype)
@@ -151,6 +159,9 @@ class DefectGANTrainer:
         self.scaler_d.scale(d_loss/divisor).backward()
         if boundary:
             logs['d_gradient_norm'] = self._step_optimizer(False)
+        del kwargs, fake_d, fake_n, d_loss
+        if getattr(self.criterion, 'paper_baseline', False):
+            del gp
         if not update_generator:
             return logs
         glogs = self._generator_step(normal, defect, divisor, boundary)
@@ -201,7 +212,7 @@ class DefectGANTrainer:
                      scaler_g_state=self.scaler_g.state_dict(), scaler_d_state=self.scaler_d.state_dict(),
                      sched_g_state=self.sched_g.state_dict() if self.sched_g else None,
                      sched_d_state=self.sched_d.state_dict() if self.sched_d else None,
-                     config=self.config, best_val_loss=self.best_val_loss,
+                     config=self.config, best_val_loss=self.best_val_loss, early_stopping_state=self.early_stopping.state_dict(),
                      rng_state={'python':random.getstate(),'numpy':np.random.get_state(),'torch':torch.get_rng_state(),
                                 'cuda':torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None},
                      architecture=getattr(self.model,'architecture','defectgan_custom_legacy'),
@@ -240,6 +251,9 @@ class DefectGANTrainer:
             setattr(self,name,checkpoint[name])
         self.generator_skipped_steps = checkpoint.get('generator_skipped_steps', 0)
         self.discriminator_skipped_steps = checkpoint.get('discriminator_skipped_steps', 0)
+        self.early_stopping.load_state_dict(checkpoint.get('early_stopping_state', {'best': self.best_val_loss}))
+        if 'early_stopping_state' not in checkpoint:
+            logger.warning('Legacy schema 2: restoring best score; patience restarts at zero, best epoch unknown')
         rng = checkpoint['rng_state']
         random.setstate(rng['python'])
         np.random.set_state(rng['numpy'])
@@ -248,7 +262,7 @@ class DefectGANTrainer:
             torch.cuda.set_rng_state_all([s.cpu() for s in rng['cuda']])
         self.at_epoch_boundary = True
 
-    def train(self, dry_run=False):
+    def train(self, dry_run=False, max_epochs_this_run=None):
         cfg = self.config.get('training',{})
         for name in ('validation_interval','checkpoint_interval','sample_interval'):
             if int(cfg.get(name,1)) < 1:
@@ -260,10 +274,27 @@ class DefectGANTrainer:
         if dry_run and (limit+self.grad_accum_steps-1)//self.grad_accum_steps < self.n_critic:
             raise ValueError('Dry-run loader too short for at least one generator update at configured n_critic')
         snapshots = [[p.detach().clone() for p in ps] for ps in (self.g_params,self.d_params)] if dry_run else None
-        if dry_run and self.device.type=='cuda':
-            torch.cuda.reset_peak_memory_stats(self.device)
+        if max_epochs_this_run is not None and max_epochs_this_run < 0:
+            raise ValueError("max_epochs_this_run cannot be negative")
         end = self.current_epoch+1 if dry_run else self.epochs
+        if max_epochs_this_run is not None:
+            end = min(end, self.current_epoch + max_epochs_this_run)
+        if self.early_stopping.stopped:
+            logger.info('Checkpoint already early-stopped; no updates performed')
+            return
         for epoch in range(self.current_epoch,end):
+            started = time.perf_counter()
+            train_seconds = 0.0
+            sums, counts = defaultdict(float), defaultdict(int)
+            score = None
+            val_metrics = {}
+            progress = tqdm(total=limit, desc=f'Epoch {epoch+1}/{self.epochs}', disable=not cfg.get('progress', True))
+            def track(values):
+                for key, value in values.items():
+                    if np.isfinite(float(value)):
+                        sums[key] += float(value); counts[key] += 1
+            if self.device.type == 'cuda':
+                torch.cuda.reset_peak_memory_stats(self.device)
             self.current_epoch=epoch
             self.at_epoch_boundary=False
             self.model.train()
@@ -281,8 +312,7 @@ class DefectGANTrainer:
                                                processed + index, group_size=size,
                                                group_end=index == size-1, update_generator=False)
                         self.global_step += 1
-                        logger.info('epoch=%d microbatch=%d d_updates=%d d_losses=%s',
-                                    epoch, processed+index, self.discriminator_updates, logs)
+                        track(logs)
                     # 5D:1G schedule policy based on actual successful updates:
                     # G is updated only when the number of successful D updates satisfies:
                     # self.discriminator_updates >= (self.generator_updates + 1) * self.n_critic
@@ -295,16 +325,25 @@ class DefectGANTrainer:
                         for index, batch in enumerate(group):
                             glogs = self._generator_step(batch['normal'].to(self.device), batch['defect'].to(self.device),
                                                          size, index == size-1)
-                            logger.info('epoch=%d microbatch=%d g_updates=%d g_losses=%s',
-                                        epoch, processed+index, self.generator_updates, glogs)
+                            track(glogs)
                         logs = {**logs, **glogs}
                     processed += size
+                    progress.update(size)
+                    if processed % max(1, int(cfg.get('log_interval', 10))) == 0 or processed == limit:
+                        progress.set_postfix({**{k: round(sums[k]/counts[k], 4) for k in sums}, 'G/D': f'{self.generator_updates}/{self.discriminator_updates}', 'AMP': str(self.amp_dtype),
+                            'skip': f'{self.generator_skipped_steps}/{self.discriminator_skipped_steps}',
+                            'lrG/D': f'{self.opt_g.param_groups[0]["lr"]:.2g}/{self.opt_d.param_groups[0]["lr"]:.2g}',
+                            'val/best': f'{getattr(self, "last_val_reconstruction", None)}/{self.best_val_loss:.4g}@{self.early_stopping.best_epoch}',
+                            'ES': f'{self.early_stopping.bad_epochs}/{self.early_stopping.patience}:{self.early_stopping.enabled}',
+                            'VRAM A/R GiB': f'{torch.cuda.max_memory_allocated(self.device)/2**30:.2f}/{torch.cuda.max_memory_reserved(self.device)/2**30:.2f}' if self.device.type == 'cuda' else 'CPU'})
+                progress.close()
             except Exception:
                 self.save_checkpoint(self.checkpoint_dir/f'emergency_unsafe_epoch_{epoch:04d}.pth',safe_to_resume=False)
                 self.opt_g.zero_grad(set_to_none=True)
                 self.opt_d.zero_grad(set_to_none=True)
                 raise
 
+            train_seconds = time.perf_counter() - started
             # Record training peak CUDA memory before validation can alter or reset memory stats
             train_peak_alloc = torch.cuda.max_memory_allocated(self.device) if self.device.type == 'cuda' else None
             train_peak_res = torch.cuda.max_memory_reserved(self.device) if self.device.type == 'cuda' else None
@@ -333,12 +372,14 @@ class DefectGANTrainer:
             if self.val_loader and ((epoch + 1) % cfg.get('validation_interval', 1) == 0 or dry_run):
                 try:
                     metrics = self.evaluator.evaluate(epoch, save_samples=(epoch + 1) % cfg.get('sample_interval', 5) == 0 or dry_run)
+                    val_metrics = metrics
                     val_peak_alloc = metrics.get('val_peak_cuda_allocated_bytes')
                     val_peak_res = metrics.get('val_peak_cuda_reserved_bytes')
                     score = metrics['val_cyc_normal'] + metrics['val_cyc_defect']
+                    self.last_val_reconstruction = score
                     if not np.isfinite(score):
                         raise ValueError(f'Non-finite validation metric: {score}')
-                    is_best = score < self.best_val_loss
+                    is_best = self.early_stopping.update(score, epoch + 1)
                     if is_best:
                         self.best_val_loss = score
                         # Only record best checkpoint after successful validation and improved metric
@@ -361,6 +402,27 @@ class DefectGANTrainer:
             else:
                 overall_peak_alloc = None
                 overall_peak_res = None
+
+            row = {key: sums[key]/counts[key] for key in sums}
+            row.update({k: v for k, v in val_metrics.items() if k.startswith('val_') and k not in ('val_peak_cuda_allocated_bytes', 'val_peak_cuda_reserved_bytes')})
+            row.update(eta_seconds=(time.perf_counter()-started)*max(0,self.epochs-epoch-1), epoch=epoch+1, epoch_seconds=time.perf_counter()-started,
+                       batch_seconds=train_seconds/limit, train_seconds=train_seconds,
+                       val_reconstruction=score, best_validation=self.best_val_loss if np.isfinite(self.best_val_loss) else None,
+                       best_epoch=self.early_stopping.best_epoch, bad_epochs=self.early_stopping.bad_epochs,
+                       early_stopped=self.early_stopping.stopped,
+                       lr_g=self.opt_g.param_groups[0]['lr'], lr_d=self.opt_d.param_groups[0]['lr'],
+                       generator_updates=self.generator_updates, discriminator_updates=self.discriminator_updates,
+                       skipped_g=self.generator_skipped_steps, skipped_d=self.discriminator_skipped_steps,
+                       amp=str(self.amp_dtype), peak_allocated_gib=(overall_peak_alloc or 0)/2**30,
+                       peak_reserved_gib=(overall_peak_res or 0)/2**30)
+            self.history.write(row)
+            self.history.plot()
+            if completed_epoch:
+                self.save_checkpoint(self.checkpoint_dir/'latest.pth')
+            logger.info('Epoch %d/%d | %.1fs | G=%.4g D=%.4g | val=%s best=%s @%s | G/D=%d/%d skip=%d/%d | VRAM %.2f/%.2f GiB | ES %d/%d enabled=%s', epoch+1, self.epochs, row['epoch_seconds'], row.get('g_loss',0), row.get('d_loss',0), score, row['best_validation'], row['best_epoch'], self.generator_updates, self.discriminator_updates, self.generator_skipped_steps, self.discriminator_skipped_steps, row['peak_allocated_gib'], row['peak_reserved_gib'], self.early_stopping.bad_epochs, self.early_stopping.patience, self.early_stopping.enabled)
+            if self.early_stopping.stopped:
+                logger.info('Early stop: no improvement > min_delta for %d validation epochs after warmup; best epoch=%s score=%s. Reconstruction proxy does not measure Scratch realism; review synthetic images.', self.early_stopping.bad_epochs, self.early_stopping.best_epoch, self.best_val_loss)
+                break
 
         if dry_run:
             changed=[any(not torch.equal(a,b) for a,b in zip(before,params)) for before,params in zip(snapshots,(self.g_params,self.d_params))]

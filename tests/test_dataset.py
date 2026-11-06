@@ -5,10 +5,19 @@ import os
 from pathlib import Path
 import pytest
 import torch
+import numpy as np
 
 from src.datasets.f971_dataset import DefectGANDataset
 from src.datasets.transforms import get_transforms
 from src.utils import denormalize, tensor_to_rgb_numpy
+
+
+def test_bfloat16_image_conversion():
+    image = torch.zeros((3, 4, 5), dtype=torch.bfloat16)
+    result = tensor_to_rgb_numpy(image)
+    assert result.shape == (4, 5, 3)
+    assert result.dtype == np.uint8
+    assert (result == 127).all()
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_ROOT = Path(os.environ.get("DATA_DIR", PROJECT_ROOT))

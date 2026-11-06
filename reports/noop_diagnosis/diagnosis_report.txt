@@ -1,0 +1,161 @@
+DEFECT-GAN F971 NO-OP DIAGNOSIS / 2026-11-06
+
+Conclusion: HOLD full training. Evidence supports alpha-gating collapse driven primarily by an unstable critic/classifier signal, not a disconnected generator or a demonstrated dominance of spatial regularization. Exact causal attribution to optimizer LR/precision/initialization requires a controlled rerun. No new training was performed.
+
+
+
+METHOD AND LIMITS
+
+Five original checkpoints; all 9 fixed validation pairs (9 OK, 8 unique NG, NG0 repeated). Native 1024 RGB. Validation inference matches original eval/no-noise BF16. Gradient probes: fixed validation pair 0 only, training mode with stochastic noise, seed 42 reset before each term, BF16 plus activation checkpointing, frozen D parameters, no optimizer. These are local checkpoint gradients, not historical optimizer-group gradients. All shared G parameters counted once. Norms are L2 of gradients of already-weighted losses, without accumulation division; mask/foreground/SPADE subsets overlap only with all. Do not add scalar norms to infer total gradient or Adam update direction.
+
+Artifacts: samples.csv/json covers 45 pairs and real/fake D scores/logits; gradients.json has 25 component probes; epoch_1..5_all9.png shows OK, real NG, fake NG, alpha, foreground, abs RGB diff x4, restored NG; train_ng_all31.png shows every train NG. Native original input/fake/reconstruction PNGs remain under original pilot samples/.
+
+
+
+GRAPH / CONDITIONING / LABEL AUDIT
+
+compose_layers = x*(1-M)+M*F. No detach in the G loss path or either reconstruction cycle. d output/dF=M and d output/dM=F-x; the foreground receives attenuated image gradients as M shrinks, while sigmoid derivative M*(1-M) attenuates the mask-logit path. Foreground remains highly different from input even late, so identity is achieved mainly by closing alpha, not by learning F=x.
+
+One shared G and D in the paper variant; optimizer parameter lists deduplicate aliases. Restoration explicitly forces category 0; defacement uses 1. SPADE broadcasts target labels; optional spatial map multiplies category, and does not act as final alpha/ROI. Nonzero SPADE gradient observed in all probes. D outputs raw patch scores and one BCE logit; no sigmoid/softmax on WGAN scores, no degenerate one-class cross-entropy. D real labels NG=1, OK=0; G targets fakeNG=1/fakeOK=0. D step freezes G and detaches fake endpoints; G step freezes D weights but differentiates D with respect to generated image. GP detached endpoints and FP32 input gradient computation are appropriate.
+
+WGAN critic is shared/unconditional: it matches the real OK+NG mixture. At an identity solution the real and fake mixtures coincide, so adversarial loss alone cannot enforce conversion to Scratch. Classification must supply the category-specific signal. This is a limitation of the chosen shared formulation, not an observed missing condition argument in D.
+
+
+
+PAPER OBJECTIVE AUDIT
+
+Reference https://arxiv.org/html/2103.15158, Eqs 5-12 and section 4.1. Code uses WGAN-GP substitution, BCE multilabel/single-Scratch adaptation, image L1 cycle reconstruction, paired mask L1 spatial cycle, sum of both mask means spatial constraint. Weights real-cls=2, fake-cls=5, rec=5, spatial-cycle=5, constraint=1; GP=10 is a project convention. The two directions are averaged. No extra target-domain identity term executes in this variant. Symmetric averaging, native 1024, critic pooling/depth and single-class encoding are documented project adaptations; paper is not an exact architectural specification.
+
+M=0 in all four calls gives output=input, rec=0, sd-cycle=0 and sd-constraint=0 regardless of foreground. Thus these losses admit/prefer the no-op subsolution. The weighted-gradient evidence below does NOT establish that their magnitudes dominate: adversarial gradients dominate all five probes, including after collapse. Removing/changing paper losses is unsupported and was not done.
+
+
+
+ORIGINAL TRAINING HISTORY: epoch | G loss | D loss | G norm | D norm | reconstruction | RGB delta | mask area M>=.1 | allocated/reserved GiB | cumulative G/D
+
+1 | 43.867 | -464.109 | 69007.00 | 5376.44 | 0.42953 | 0.11860 | 0.39630 | 6.463/6.682 | 3/18
+
+2 | -1066.786 | 5.057 | 13377.06 | 2954.10 | 0.29867 | 0.13454 | 0.28987 | 6.466/6.693 | 7/36
+
+3 | 329.599 | -65.256 | 3214.33 | 1407.56 | 0.28552 | 0.13183 | 0.28130 | 6.466/6.693 | 10/54
+
+4 | 1078.180 | -33.525 | 6579.47 | 1159.83 | 0.16904 | 0.03504 | 0.16620 | 6.466/6.693 | 14/72
+
+5 | 120.349 | -8.126 | 1646.49 | 308.61 | 0.16746 | 0.02432 | 0.06257 | 6.466/6.693 | 18/90
+
+
+
+WEIGHTED LOSS AND GRADIENT PROBE: epoch | term | weighted value | all norm | mask norm | foreground norm | SPADE norm | dL/d(first alpha) mean | positive fraction (descent closes alpha)
+
+1 | adv | -2400 | 26420 | 15406 | 18083 | 7277.6 | 0.0023475 | 0.7587
+
+1 | cls | 1860 | 10584 | 2800.6 | 6822.9 | 637.11 | 0 | 0.0000
+
+1 | rec | 1.0592 | 22.114 | 17.57 | 5.8281 | 5.6813 | 7.4812e-07 | 0.5139
+
+1 | sd_cyc | 1.3906 | 22.253 | 17.122 | 1.0567 | 11.154 | -1.8064e-06 | 0.4203
+
+1 | sd_con | 0.53516 | 9.0865 | 8.4381 | 0.29102 | 2.9681 | 4.764e-07 | 0.6015
+
+2 | adv | -362 | 4210.6 | 2744.8 | 2503.5 | 1391.2 | 4.5482e-06 | 0.5127
+
+2 | cls | 86.25 | 1743.2 | 1148.3 | 764.04 | 730.35 | 9.1931e-05 | 0.5148
+
+2 | rec | 0.99067 | 18.15 | 15.04 | 5.187 | 6.4976 | 8.8356e-07 | 0.5122
+
+2 | sd_cyc | 1.2344 | 17.995 | 13.892 | 2.2042 | 9.0199 | -1.648e-06 | 0.3645
+
+2 | sd_con | 0.49805 | 8.1231 | 7.4518 | 0.33096 | 2.8545 | 5.1002e-07 | 0.6733
+
+3 | adv | 1128 | 8329.1 | 7042.9 | 2082 | 3107 | 0.00012732 | 0.5401
+
+3 | cls | 195 | 847.8 | 336.2 | 609.15 | 61.215 | 0 | 0.0000
+
+3 | rec | 0.95803 | 18.504 | 15.341 | 5.2279 | 6.6419 | 9.4975e-07 | 0.5181
+
+3 | sd_cyc | 1.1875 | 17.9 | 13.655 | 2.5518 | 8.8908 | -1.6933e-06 | 0.3690
+
+3 | sd_con | 0.48633 | 8.3459 | 7.6726 | 0.35053 | 2.9124 | 5.1559e-07 | 0.6632
+
+4 | adv | 352 | 2484.9 | 737.45 | 1380.3 | 233.45 | 7.538e-08 | 0.5319
+
+4 | cls | 9.4093e-05 | 0.042421 | 0.032788 | 0.012777 | 0.018026 | -3.0314e-09 | 0.4644
+
+4 | rec | 0.49484 | 11.265 | 9.448 | 4.0019 | 2.9438 | 1.4055e-06 | 0.5290
+
+4 | sd_cyc | 1.3594 | 15.524 | 12.146 | 0.45448 | 7.9582 | -2.2541e-06 | 0.3731
+
+4 | sd_con | 0.39062 | 6.0281 | 5.5899 | 0.1056 | 1.7626 | 4.9185e-07 | 0.6330
+
+5 | adv | 105.5 | 1473.9 | 788.09 | 928.65 | 211.41 | 7.8374e-05 | 0.5052
+
+5 | cls | 0.042606 | 12.82 | 4.2498 | 9.403 | 0.74735 | -4.1394e-08 | 0.4275
+
+5 | rec | 0.47029 | 8.9497 | 7.2029 | 3.5193 | 1.6199 | 8.2628e-07 | 0.5294
+
+5 | sd_cyc | 1.375 | 15.182 | 11.792 | 0.33375 | 7.6203 | -2.3263e-06 | 0.3634
+
+5 | sd_con | 0.37891 | 5.6202 | 5.2123 | 0.096393 | 1.5891 | 4.8095e-07 | 0.6383
+
+
+
+ALL-9 VALIDATION: epoch | RGB | alpha mean | area | F-input L1 | real NG/OK cls logit means | fake NG/OK cls logit means | real balanced accuracy | fake target balanced accuracy
+
+1 | 0.11860 | 0.15925 | 0.39630 | 0.73311 | 956.000/839.111 | 908.444/847.111 | 0.500 | 0.500
+
+2 | 0.13454 | 0.14778 | 0.28987 | 0.66002 | -21.535/-30.160 | -30.597/-33.347 | 0.611 | 0.500
+
+3 | 0.13183 | 0.14483 | 0.28130 | 0.65299 | 73.833/58.472 | 87.556/81.611 | 0.500 | 0.500
+
+4 | 0.03504 | 0.06132 | 0.16620 | 0.56255 | 5.007/-2.429 | 7.862/-3.399 | 0.611 | 0.667
+
+5 | 0.02432 | 0.05460 | 0.06257 | 0.54092 | 9.812/6.306 | 8.267/4.785 | 0.500 | 0.722
+
+
+
+INTERPRETATION AND VISUAL EVIDENCE
+
+Classifier swings both real domains positive at epoch 1 (means 956 and 839), negative at epoch 2, and positive again at epoch 3. This cannot serve as a reliable semantic Scratch score. The first defacement classification alpha gradient is zero for probes 1 and 3 although classification still has a large total gradient from the restoration direction. BCE targets are correct; saturation can remove the corrective signal when a near-input fake already satisfies the current Scratch head. Epoch 4 classification norm is only .042 versus adversarial 2485. This is optimization/semantic-signal failure evidence, not proof of an LR fix.
+
+Visual review covered 31 train NG and 45 validation results. Real defects include narrow dark fissures and larger jagged orange/brown exposed-material scratches/tears, with irregular paths that can cross printed characters or occur on blank material. Generated effects in epochs 1-3 mainly recolor/halo existing letters, holes and material boundaries, with diffuse texture changes. They do not reproduce the reference Scratch morphology. Epochs 4-5 close alpha while foreground still contains saturated high-contrast boundaries; fake becomes close to original. On pair 7 (mostly blank material), boundary modification remains but there is no clear newly synthesized matching jagged Scratch. No pair has a convincing new Scratch in these overview comparisons. This is visual diagnostic judgement, not an annotated detector score; subtle subpixel defects cannot be ruled out by montage.
+
+Every sample-specific numeric record and path is in samples.csv. Fixed edge_delta/nonedge_delta are computed from input local high-pass threshold .025, independent of learned alpha; they are texture-edge proxies, not text segmentation or semantic background masks. Do not interpret them as Scratch precision.
+
+
+
+COVERAGE BUG AND MINIMAL FIX
+
+Pilot FullPatchCoverageDataset already covered all 41 clean +31 NG identifiers per epoch. It yields 72 PAIRS, or 144 image exposures with repetitions; it does not mean exactly one exposure of each image. Official config lacked cover_all_manifest_rows_per_epoch and defaulted to 41 pair draws with replacement for NG: expected unique NG ~23, around 8 unseen per epoch. Enabled the existing wrapper in configs/defectgan_1024.yaml; no data, pairing implementation or objective edited. This bug did not cause the audited pilot collapse because the pilot flag was already true.
+
+Shuffle preserves coverage and drop_last=False retains the tail. With accumulation4, 72 pairs give 18 D updates/epoch; global ncritic5 yields cumulative G=3,7,10,14,18. Only eligible groups are used for G updates; full D exposure does not promise every image directly updates G each epoch. That follows the configured 5:1 schedule, not silent dataloader truncation.
+
+Regression: tests/test_noop_audit.py asserts official flag, actual 41/31 unique coverage, 72 pairs, analytic alpha/foreground composition gradients and zero-mask identity. Together with paper baseline and trainer regressions: 39 passed; reports/noop_regression.log. Existing dirty working tree preserved; no commit/push.
+
+
+
+CHECKPOINT / EARLY STOPPING PROPOSAL (NOT SILENTLY CHANGED)
+
+Current best.pth is best cycle reconstruction only and selects epoch5 despite weak synthesis. ES warmup30/patience25 cannot guard a 5-epoch pilot; reconstruction can keep improving during no-op. Retain latest/safe epoch resume and rename conceptual best to best_reconstruction; never promote it as best_scratch automatically.
+
+Proposed pilot guard, active from epoch1 independent of ES warmup: flag joint RGB and mask-area declines below 50% of their previous running maxima on two consecutive validations, across the fixed 9 samples. F971 triggers epochs4 and5. Also flag per-sample RGB L1<.01 or alpha area<.01 for review; thresholds are diagnostic project proposals, not paper constants. High RGB alone can be artifact and must not qualify a checkpoint.
+
+Use frozen, human-reviewed background ROIs independent of learned alpha for L1/edge preservation and letter readability. Proposed background mean L1<=.02 in [-1,1] on each pair, plus no visible recoloring/halo. Current outside-learned-mask mean is circular and insufficient. Review real NG alongside fake at full resolution and identical crops; score presence of a NEW plausible Scratch, location away from mere glyph outlines, and preservation. Require at least 7/9 pairs with plausible new Scratch and no severe artifact, plus no-op guard pass before promoting best_scratch. These thresholds need product-owner validation; no such semantic checkpoint passes now.
+
+
+
+AT MOST TWO CONTROLLED PILOTS PROPOSED; NONE EXECUTED HERE
+
+A: fresh seed42, same manifests/coverage/shuffle/validation, 5 epochs maximum, G LR5e-5 D LR1e-4. Compare against existing 1e-4/1e-4 reference; hypothesis slower G reduces early alpha closure. B: fresh seed42, same settings, G LR1e-4 D LR5e-5, 5 epochs maximum; hypothesis smaller critic steps reduce extreme classifier/critic oscillations. Do not combine interventions or resume collapsed weights. Keep objective weights, architecture, BF16, accumulation, ncritic and no scheduler fixed. Repeat reference only if reproducibility of ordering differs; that would consume/replace one of these two pilot slots rather than adding a third.
+
+For either run collect per-term weighted losses/gradients on the same fixed pair at each checkpoint, full train G/D norms/GP and counts, all9 RGB/mask/F/difference and real/fake scores, fixed-background metrics, visual Scratch review and allocated/reserved VRAM. Compare per-sample values as well as means. Loss/gradient improvement or reduced LR alone cannot establish success.
+
+
+
+FULL-TRAIN RELEASE CONDITIONS
+
+Keep HOLD until: 39 regression checks pass; all72 unique train identifiers observed each epoch; no skipped/nonfinite updates; fixed-all9 semantic Scratch and independent background gates pass; no joint no-op decline over last2 validations; classifier real balanced accuracy>=.75 on these pairs with both domains represented, without broad logit saturation; native training VRAM reserved<=12 GiB with no OOM; one safe checkpoint reload reproduces fixed outputs. Validation is tiny and partially repeated, so these are necessary pilot gates, not evidence of generalization. If neither <=5epoch pilot clears them, revisit discriminator/classifier design and initialization under a separately reviewed change; do not extend to 200 epochs hoping reconstruction will solve it.
+
+
+
+RESOURCE AND SCOPE
+
+Completed isolated loss probes peaked at allocated 6.333-6.337 GiB (no optimizer states); this is not a training memory benchmark. Original training peak allocated6.47/reserved6.69 GiB. An initial retain-graph diagnostic was terminated after GPU memory pressure approached physical capacity; it was replaced with independent graphs, no weights/checkpoints updated. No NaN/OOM was reported by completed probes. No full/pilot retraining, dataset edit, Windows change, commit or push.

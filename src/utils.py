@@ -50,7 +50,7 @@ def tensor_to_rgb_numpy(tensor: torch.Tensor) -> np.ndarray:
     Returns:
         NumPy uint8 array of shape [H, W, 3] in RGB format.
     """
-    t = tensor.detach().cpu()
+    t = tensor.detach().to(device='cpu', dtype=torch.float32)
     if t.dim() == 4:
         t = t.squeeze(0)  # Handle [1, C, H, W]
 

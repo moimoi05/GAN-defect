@@ -1,0 +1,66 @@
+﻿experiment:
+  name: defectgan_f971_stability_pilot_5ep_seed42
+  seed: 42
+  description: Fresh initialization, maximum 5-epoch full-F971 stability pilot; not a full training run.
+data:
+  image_size: 1024
+  channels: 3
+  data_root: .
+  train_manifest: training/manifests/train.csv
+  val_manifest: training/manifests/val.csv
+  test_manifest: training/manifests/test.csv
+  num_workers: 4
+  pin_memory: true
+model:
+  generator:
+    base_channels: 64
+    num_resblocks: 6
+    num_classes: 1
+    use_spade: true
+    use_noise_injection: true
+  discriminator:
+    base_channels: 64
+    num_scales: 1
+    num_classes: 1
+    num_layers: 6
+  architecture: defectgan_paper_baseline
+training:
+  device: cuda
+  batch_size: 1
+  gradient_accumulation_steps: 4
+  mixed_precision: bf16
+  activation_checkpointing: true
+  cover_all_manifest_rows_per_epoch: true
+  epochs: 5
+  log_interval: 18
+  progress: true
+  optimizer:
+    lr_g: 0.0001
+    lr_d: 0.0001
+    beta1: 0.5
+    beta2: 0.999
+    weight_decay: 0.0
+  scheduler:
+    type: none
+  loss_weights:
+    lambda_cls_real: 2.0
+    lambda_cls_fake: 5.0
+    lambda_rec: 5.0
+    lambda_sd_cyc: 5.0
+    lambda_sd_con: 1.0
+    lambda_gp: 10.0
+  checkpoint_interval: 1
+  validation_interval: 1
+  sample_interval: 1
+  n_critic: 5
+output:
+  root: outputs/stability_pilot
+  save_rgb_samples: true
+  save_checkpoints: true
+early_stopping:
+  enabled: true
+  monitor: val_reconstruction
+  mode: min
+  patience: 25
+  min_delta: 0.001
+  warmup_epochs: 30

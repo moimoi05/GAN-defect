@@ -51,8 +51,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Alias for dry-run verification mode.",
     )
+    parser.add_argument("--max-epochs-this-run", type=int, default=None,
+                        help="Bound one invocation; useful for reviewed epoch-by-epoch pilots.")
+    parser.add_argument("--verify-resume-only", action="store_true",
+                        help="Load a trusted checkpoint and report restored state without training.")
     parser.add_argument(
         "--device",
+
         type=str,
         default=None,
         help="Override device (cuda, cpu, auto).",
@@ -147,6 +152,11 @@ def main() -> None:
     )
 
     training_cfg = config.get("training", {})
+    if training_cfg.get("cover_all_manifest_rows_per_epoch", False):
+        from src.datasets.full_patch_coverage import FullPatchCoverageDataset
+        train_dataset = FullPatchCoverageDataset(train_dataset)
+        logger.info("Pilot coverage enabled: %d manifest patches per epoch (%d clean + %d defect)",
+                    len(train_dataset), train_dataset.clean_count, train_dataset.defect_count)
     batch_size = training_cfg.get("batch_size", 1)
     if dry_run:
         config = {**config, "smoke_subset": True}
@@ -224,10 +234,17 @@ def main() -> None:
     resume_path = args.resume or training_cfg.get("resume")
     if resume_path:
         trainer.load_checkpoint(Path(resume_path))
+        logger.info("Checkpoint restored: epoch=%d G=%d D=%d ES=%s", trainer.current_epoch,
+                    trainer.generator_updates, trainer.discriminator_updates,
+                    trainer.early_stopping.state_dict())
+    if args.verify_resume_only:
+        if not resume_path:
+            raise ValueError("--verify-resume-only requires --resume")
+        return
 
     # 8. Run training
     logger.info("Executing training session...")
-    trainer.train(dry_run=dry_run)
+    trainer.train(dry_run=dry_run, max_epochs_this_run=args.max_epochs_this_run)
     logger.info("Training process completed.")
 
 

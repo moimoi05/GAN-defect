@@ -8,6 +8,19 @@ import pytest
 from scripts import run_smoke_test as smoke
 
 
+def test_gpu_components_and_cuda_acceptance_run_separately(monkeypatch):
+    commands = []
+    monkeypatch.setitem(smoke._CONTEXT, 'device', 'cuda')
+    monkeypatch.setattr(smoke, 'run_command', lambda command: commands.append(command) or True)
+    assert smoke.run_stage_2_components()
+    assert len(commands) == 2
+    assert 'tests/test_paper_baseline.py' in commands[0]
+    assert '-k' not in commands[0]
+    assert 'tests/test_trainer_regression.py::test_real_cuda_amp_gradscaler_overflow' in commands[1]
+    monkeypatch.setattr(smoke, 'run_command', lambda command: False)
+    assert not smoke.run_stage_2_components()
+
+
 def test_failed_stage_returns_nonzero_and_skips_dependencies(monkeypatch):
     called = []
     monkeypatch.setattr(smoke, 'run_stage_1_dataset', lambda: False)

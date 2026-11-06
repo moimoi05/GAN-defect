@@ -12,6 +12,7 @@ class DefectGANEvaluator:
         self.model, self.criterion, self.val_loader = model, criterion, val_loader
         self.device, self.output_dir = device, Path(output_dir)
         self.use_amp, self.amp_dtype = use_amp, amp_dtype
+        self.save_all_samples = False
         self.samples_dir = self.output_dir/'samples'
         self.samples_dir.mkdir(parents=True,exist_ok=True)
 
@@ -52,7 +53,12 @@ class DefectGANEvaluator:
                         target_cls_defect=c,target_cls_normal=torch.zeros_like(c))
                 metrics = {'val_'+k:v for k,v in {**glogs,**dlogs}.items()}
                 metrics['val_d_loss_without_gp'] = metrics.pop('val_d_loss')
-                metrics.update(val_cyc_normal=(recon_n['output']-normal).abs().mean().item(),
+                outside = (fake_d['mask'] < 0.1).to(fake_d['output'].dtype)
+                outside_count = outside.sum().clamp_min(1.0) * 3
+                background_delta = ((fake_d['output'] - normal).abs() * outside).sum() / outside_count
+                metrics.update(val_bg_change_outside_mask=background_delta.item(),
+                               val_mask_area_fraction_defect=(fake_d['mask'] >= 0.1).float().mean().item(),
+                               val_cyc_normal=(recon_n['output']-normal).abs().mean().item(),
                                val_cyc_defect=(recon_d['output']-defect).abs().mean().item(),
                                val_mask_defect_mean=fake_d['mask'].mean().item(),
                                val_mask_normal_mean=fake_n['mask'].mean().item(),
@@ -64,16 +70,17 @@ class DefectGANEvaluator:
                         raise ValueError(f'Non-finite validation metric: {key}')
                     totals[key]=totals.get(key,0.)+value*n
                 count+=n
-                if save_samples and index == 0:
+                if save_samples and (index == 0 or self.save_all_samples):
                     directory=self.samples_dir/f'epoch_{epoch:04d}'
                     for i in range(min(n,4)):
+                        sample_index = index * n + i
                         images={'01_normal_input':normal[i],'02_fake_defect':fake_d['output'][i],
                                 '03_internal_alpha_debug':fake_d['mask'][i], '04_recon_normal':recon_n['output'][i],
                                 '05_real_defect_unpaired_reference':defect[i],'06_fake_normal':fake_n['output'][i],
                                 '07_recon_defect':recon_d['output'][i],
                                 '08_rgb_difference_debug':(fake_d['output'][i]-normal[i]).abs().clamp(0,2)-1}
                         for name,image in images.items():
-                            save_rgb_image(image,directory/f'sample_{i}_{name}.png')
+                            save_rgb_image(image,directory/f'sample_{sample_index}_{name}.png')
             if count == 0:
                 raise ValueError('Validation loader is empty; no valid checkpoint selection metric')
             result={k:v/count for k,v in totals.items()}

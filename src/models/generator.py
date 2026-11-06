@@ -386,6 +386,15 @@ class DefectGANGenerator(nn.Module):
     def forward(self, x, c=None, spatial_map=None, noise_mode=None, generator=None):
         token = _noise_settings.set((noise_mode, generator))
         try:
+            if getattr(self, 'activation_checkpointing', False) and self.training and torch.is_grad_enabled() and generator is None:
+                from torch.utils.checkpoint import checkpoint
+                def recompute(*args):
+                    replay_token = _noise_settings.set((noise_mode, None))
+                    try:
+                        return self._forward(*args)
+                    finally:
+                        _noise_settings.reset(replay_token)
+                return checkpoint(recompute, x, c, spatial_map, use_reentrant=False, preserve_rng_state=True)
             return self._forward(x, c, spatial_map)
         finally:
             _noise_settings.reset(token)

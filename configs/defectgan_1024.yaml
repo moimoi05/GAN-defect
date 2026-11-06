@@ -29,7 +29,11 @@ training:
   device: auto
   batch_size: 1
   gradient_accumulation_steps: 4
-  mixed_precision: auto
+  mixed_precision: bf16
+  activation_checkpointing: true
+  cover_all_manifest_rows_per_epoch: true
+  log_interval: 10
+  progress: true
   epochs: 200
   optimizer:
     lr_g: 0.0001
@@ -55,3 +59,11 @@ output:
   root: outputs
   save_rgb_samples: true
   save_checkpoints: true
+
+early_stopping:
+  enabled: true
+  monitor: val_reconstruction
+  mode: min
+  patience: 25
+  min_delta: 0.001
+  warmup_epochs: 30

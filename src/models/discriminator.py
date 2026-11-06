@@ -224,5 +224,9 @@ class StarGANDiscriminator(nn.Module):
     def forward(self, x):
         if min(x.shape[-2:]) < 2**self.num_layers:
             raise ValueError("Input too small for configured critic depth")
-        h = self.trunk(x)
+        if getattr(self, 'activation_checkpointing', False) and self.training and torch.is_grad_enabled():
+            from torch.utils.checkpoint import checkpoint
+            h = checkpoint(self.trunk, x, use_reentrant=False, preserve_rng_state=True)
+        else:
+            h = self.trunk(x)
         return [(self.src(h), self.cls(h))]
